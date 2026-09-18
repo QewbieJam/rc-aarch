@@ -1,0 +1,21 @@
+# Rust 编译产物（不要上传）
+target/
+**/target/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.iml
+
+# 编译中间文件
+*.o
+*.bin
+*.elf
+
+# 日志与本地环境
+*.log
+.env
+
+# macOS/Windows 杂项
+.DS_Store
+Thumbs.db
