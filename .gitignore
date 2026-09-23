@@ -19,3 +19,7 @@ target/
 # macOS/Windows 杂项
 .DS_Store
 Thumbs.db
+
+# cell 配置的编译产物（由 scripts/build-cell.sh 生成）
+cells/*.o
+cells/*.cell
