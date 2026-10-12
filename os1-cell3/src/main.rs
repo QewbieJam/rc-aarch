@@ -1,47 +1,28 @@
-//! rc-aarch 阶段 1：AArch64 裸机 Hello World
+//! rc-aarch 阶段 2：异常 / 陷入框架（ch2-A）
 //!
-//! 这个文件合并了 rCore ch1 的三个文件（简化版）：
-//!   rCore main.rs        → 本文件的 rust_main / clear_bss
-//!   rCore console.rs     → 本文件的 uart_putc / print（但不用 SBI，直接写 MMIO）
-//!   rCore lang_items.rs  → 本文件的 panic_handler
+//! 对照 rCore-Tutorial-v3 ch2 的 `os/src/main.rs`：
+//!   rCore:  clear_bss → logging::init → 打印各段 → trap::init() → batch::init() → run_next_app()
+//!   我们:  clear_bss → 打印 → trap::init() → svc 自测（batch 留在 ch2-C）
 //!
-//! 关键区别（RISC-V → AArch64）：
-//!   rCore 打印：  ecall 请求 RustSBI（M-mode 固件）代劳
-//!   rc-aarch：    直接写 PL011 UART 寄存器（0x0900_0000），没有固件帮忙
+//! 模块划分刻意对齐 upstream，方便逐文件对照：
+//!   os/src/console.rs      → src/console.rs        （✅ 已升级为带格式化的 print!/println!）
+//!   os/src/trap/trap.S     → src/trap/trap.S       （向量表 + 现场保存/恢复）
+//!   os/src/trap/context.rs → src/trap/context.rs   （TrapContext）
+//!   os/src/trap/mod.rs     → src/trap/mod.rs       （init + trap_handler）
 
 #![no_std]
 #![no_main]
 
 use core::arch::global_asm;
 
+// ★ 顺序很重要：`#[macro_use]` 让 console.rs 里的 print!/println! 在**其后**的模块里可用
+//   （rCore ch2 的 main.rs 也是这么写的）
+#[macro_use]
+mod console;
+mod trap;
+
 // 把启动汇编嵌进二进制（对应 rCore 的 global_asm!(include_str!("entry.asm")))
 global_asm!(include_str!("boot.S"));
-
-/// mini-UART（0xFE215040）的数据寄存器（THR）与线路状态寄存器（LSR）
-/// 对照 rCore：rCore 用 SBI 的 console_putchar（固件代劳），这里直接写 MMIO
-const UART0_DR: *mut u8 = 0xFE215040 as *mut u8;
-const UART0_LSR: *const u8 = (0xFE215040usize + 0x14) as *const u8; // 间距 4 字节，LSR=+0x14
-
-/// 输出一个字节（两条通路：① Jailhouse 虚拟控制台 ② mini-UART）
-fn uart_putc(c: u8) {
-    unsafe {
-        // ① hvc：进 hypervisor 控制台（串口 + /sys/devices/jailhouse/console 都能看到）
-        core::arch::asm!("hvc #0x4a48", in("x0") 8usize, in("x1") c as usize);
-    }
-    unsafe {
-        // ② mini-UART 直写：★ 必须先等 THRE(bit5) 置位
-        //    不等就连续写会丢字符（这正是之前"只看到第一个 A、后面全丢"的原因）
-        while core::ptr::read_volatile(UART0_LSR) & 0x20 == 0 {}
-        core::ptr::write_volatile(UART0_DR, c);
-    }
-}
-
-/// 输出字符串（对应 rCore 的 console::print，但没有格式化）
-fn print(s: &str) {
-    for b in s.bytes() {
-        uart_putc(b);
-    }
-}
 
 // 链接脚本里定义的符号（对应 rCore 的 extern "C" { safe fn sbss(); ... }）
 unsafe extern "C" {
@@ -63,8 +44,15 @@ fn clear_bss() {
 pub extern "C" fn rust_main() -> ! {
     clear_bss();
 
-    print("[rc-aarch] Hello, AArch64!\n");
-    print("[rc-aarch] stage 1: boot + linker + bss + UART OK\n");
+    console::print_str("[rc-aarch] stage 2: trap framework on Jailhouse cell3\n");
+
+    // ① 装向量表：VBAR_EL1 ← __vector_table
+    trap::init();
+
+    // ② 自测：svc 触发一次同步异常，检查保存/恢复有没有把寄存器写坏
+    trap::self_test();
+
+    println!("[rc-aarch] ch2-A done: svc -> vector#4 -> trap_handler -> eret 全部正常");
 
     loop {
         core::hint::spin_loop();
@@ -73,8 +61,8 @@ pub extern "C" fn rust_main() -> ! {
 
 /// panic 兜底（对应 rCore 的 lang_items.rs）
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    print("[rc-aarch] PANIC!\n");
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    println!("[rc-aarch] PANIC: {}", info);
     loop {
         core::hint::spin_loop();
     }

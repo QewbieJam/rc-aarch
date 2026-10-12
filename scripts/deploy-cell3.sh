@@ -10,7 +10,8 @@ ROOTCELL=${ROOTCELL:-root@192.168.31.74}
 # 传 ELF（推荐，工具会读它的加载地址）或 .bin（脚本会自动补 -a 0xFA000000）
 BIN=${1:-os1/target/aarch64-unknown-none/release/rc-aarch-os1}
 # ssh 连接复用：scp/ssh 多次调用只问一次密码
-SSHOPTS="-o ControlMaster=auto -o ControlPath=/tmp/rc-aarch-ssh-%r@%h:%p -o ControlPersist=120"
+# 允许外部覆盖（例如本机 /etc/ssh 所有权坏了时：SSHOPTS="-F /dev/null"）
+SSHOPTS="${SSHOPTS:--o ControlMaster=auto -o ControlPath=/tmp/rc-aarch-ssh-%r@%h:%p -o ControlPersist=120}"
 [ -f "$BIN" ] || { echo "没有 $BIN —— 先编内核（make）并 objcopy -O binary"; exit 1; }
 ./scripts/build-cell.sh
 
