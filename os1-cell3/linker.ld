@@ -19,6 +19,16 @@ SECTIONS
         *(.text .text.*)
     }
 
+    /* ---- 异常向量表（ch2）----
+     * ★ 必须同时满足两件事：
+     *   1) 2KB 对齐 —— VBAR_EL1 低 11 位必须为 0（表长 16 × 0x80 = 0x800）
+     *   2) 绝不能排在 _start 前面！cell 配置里 cpu_reset_address = 0xFA000000 是写死的，
+     *      若向量表占了 0xFA000000，上电就会去"执行向量表"而不是 _start
+     *      （复习 §5.4：linker 基址 / LOADABLE 区 / cpu_reset_address 三个地址必须对齐）*/
+    .text.vectors : ALIGN(2048) {
+        KEEP(*(.text.vectors))
+    }
+
     /* ---- 只读数据（字符串常量等）---- */
     .rodata : ALIGN(4096) {
         *(.rodata .rodata.*)
