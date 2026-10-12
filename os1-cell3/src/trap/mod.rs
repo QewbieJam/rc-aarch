@@ -120,17 +120,12 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
         }
         ec::DABT_LOW | ec::DABT_CUR => {
             // 对应 rCore 的 StoreFault / StorePageFault（ch2-D 里改成 kill app）
-            crate::println!("[trap]   -> Data Abort @ {:#x} (ch2-D 里改成 kill app)", far);
-            infinite_loop();
+            crate::println!("[trap]   -> Data Abort @ {:#x}", far);
+            fault_from(far, spsr);
         }
         ec::IABT_LOW | ec::IABT_CUR => {
-            // ★ EL0 探针的关键判据：EL0 若不能取指（Device 内存 + EL0 禁止访问），
-            //   就会立刻以 EC=0x20 落在这里，FAR = 那条 EL0 指令的地址
-            crate::println!(
-                "[trap]   -> Instruction Abort @ {:#x}  ← EL0 取指失败（ch2-C 的 app 只能跑 EL1）",
-                far
-            );
-            infinite_loop(); // ch2-D 里改成 kill app 换下一个
+            crate::println!("[trap]   -> Instruction Abort @ {:#x}", far);
+            fault_from(far, spsr);
         }
         ec::UNKNOWN => {
             // 对应 rCore 的 IllegalInstruction。
@@ -139,8 +134,9 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
                 "[trap]   -> Unknown/Illegal instruction @ ELR={:#x} (ch2-D 里改成 kill app)",
                 elr
             );
-            // 前进一条指令，避免"同一条非法指令 → 又回来"的死循环刷屏
-            cx.elr_el1 += 4;
+            // ⚠️ 这里**不能**像 RISC-V 那样靠 `+= 4` 越过非法指令来"忽略"它，
+            //    因为我们要把 app 杀掉换下一个（见 fault_from）
+            fault_from(elr, spsr);
         }
         _ => {
             crate::println!("[trap]   -> 尚未处理，先停在这里");
@@ -178,6 +174,24 @@ pub fn self_test() {
     }
 }
 
+/// 异常发生后的处理：来自 EL0 的异常 → 杀掉当前 app 换下一个；
+/// 来自 EL1 的异常 → 是内核自己的 bug，停下来别装作没事
+fn fault_from(addr: usize, spsr: usize) -> ! {
+    if spsr & 0xf == 0 {
+        crate::println!("[trap] EL0 的 app 异常于 {:#x} → 杀掉它，跑下一个 app", addr);
+        crate::batch::run_next_app();
+    } else {
+        crate::println!("[trap] 内核自己（EL1）异常于 {:#x} → 停机", addr);
+        shutdown();
+    }
+}
+
+/// 停机（裸机 cell 没有关机能力，只能死循环等外部处理）
+pub fn shutdown() -> ! {
+    crate::println!("[trap] shutdown：进入死循环（ch3 之后可以改成报状态给 hypervisor）");
+    infinite_loop()
+}
+
 /// ch2-B 自测：内核态发起一次真正的系统调用（`svc`，x8=SYSCALL_WRITE）
 pub fn syscall_test() {
     let msg = b"[syscall] sys_write: hello from a syscall!\n";
@@ -206,7 +220,8 @@ pub fn syscall_test() {
     crate::println!("[syscall] 未知调用号返回 {}", bad);
 }
 
-/// ch2-C 前置探针：EL0 到底能不能跑？
+/// ch2-C 前置探针：EL0 到底能不能跑？（已被真正的 app 取代，留着当工具）
+#[allow(dead_code)]
 pub fn probe_el0() -> ! {
     let entry = el0_probe_stub as *const () as usize;
     let stack_top = core::ptr::addr_of!(el0_probe_stack_top) as usize;

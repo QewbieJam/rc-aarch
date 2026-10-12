@@ -1,0 +1,9 @@
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+rustflags = [
+    # app 的链接基址 = 0xFA100000（cell3 的 [1] RAM 区），见 src/linker.ld
+    "-Clink-arg=-Tsrc/linker.ld",
+    "-Cforce-frame-pointers=yes",
+]

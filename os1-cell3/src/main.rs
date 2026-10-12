@@ -19,11 +19,15 @@ use core::arch::global_asm;
 //   （rCore ch2 的 main.rs 也是这么写的）
 #[macro_use]
 mod console;
+mod batch;
+mod sync;
 mod syscall;
 mod trap;
 
 // 把启动汇编嵌进二进制（对应 rCore 的 global_asm!(include_str!("entry.asm")))
 global_asm!(include_str!("boot.S"));
+// app 的二进制（build.rs 生成；对应 rCore 的 global_asm!(include_str!("link_app.S")))
+global_asm!(include_str!("link_app.S"));
 
 // 链接脚本里定义的符号（对应 rCore 的 extern "C" { safe fn sbss(); ... }）
 unsafe extern "C" {
@@ -58,8 +62,9 @@ pub extern "C" fn rust_main() -> ! {
     // ③ ch2-B：内核态发起真正的系统调用（svc，x8=调用号）
     trap::syscall_test();
 
-    // ④ ch2-C 前置探针：试试能不能下到 EL0（已实测：能 ✔）
-    trap::probe_el0()
+    // ④ ch2-C：批处理 —— 打印 app 表，然后把第一个 app 放进 EL0 跑起来
+    batch::init();
+    batch::run_next_app()
 }
 
 /// panic 兜底（对应 rCore 的 lang_items.rs）

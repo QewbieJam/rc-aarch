@@ -132,6 +132,16 @@ sync_handler:
     RESTORE_REGS
     eret                            /* 回到被打断的那一行继续跑 */
 
+/* __restore：从 TrapContext 恢复现场并 eret（对照 rCore 的 __restore）
+ *   x0 = &TrapContext（batch 把它压在内核栈顶）
+ * 用途：第一次启动 app 时"凭空"进入 EL0 —— sync_handler 返回路径是内联的，不走这里
+ */
+    .global __restore
+__restore:
+    mov     sp, x0
+    RESTORE_REGS
+    eret
+
 irq_handler:
     /* ch3 在这里实现：读 GICC_IAR → 处理定时器 → 写 GICC_EOIR
      * ch2 没有中断，走到这里说明哪里不对 → 交给 panic 路径打印 */
@@ -253,6 +263,7 @@ el0_probe_stub:
 /* 探针用的 4KB 栈（放在 .bss.stack 里，linker 不会清零这一块）*/
     .section .bss.stack, "aw", %nobits
     .balign 16
+el0_probe_stack_lower:
+    .space 4096                     /* 先留出空间，标签才是"栈顶" */
     .global el0_probe_stack_top
 el0_probe_stack_top:
-    .space 4096

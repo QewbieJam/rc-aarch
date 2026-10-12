@@ -6,11 +6,10 @@
 //!   我们:  裸机 cell3 里没有"关机"（`hvc` 也没有关机服务），所以先打印后停住；
 //!          ch2-C 会改成"干掉当前 app、换下一个 app"（对应 `batch::run_next_app`）
 
-/// 退出（对照 rCore 的 `pub fn sys_exit(exit_code: i32) -> !`）
+/// 退出（对照 rCore ch2 的 `pub fn sys_exit(exit_code: i32) -> ! { run_next_app() }`）
+///
+/// rCore ch2 里 app 主动退出 → 内核切下一个 app；我们完全照做。
 pub fn sys_exit(exit_code: i32) -> ! {
-    crate::println!("[sys_exit] 退出码 = {}", exit_code);
-    crate::println!("[sys_exit] （ch2-C 里会在这里切到下一个 app）");
-    loop {
-        core::hint::spin_loop();
-    }
+    crate::println!("[kernel] Application exited with code {}", exit_code);
+    crate::batch::run_next_app()
 }

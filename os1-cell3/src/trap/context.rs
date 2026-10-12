@@ -14,9 +14,11 @@
 //! 264    spsr_el1     mrs spsr_el1     （返回时的 PSTATE，对应 rCore 的 sstatus）
 //! ```
 
-/// 目标特权级开关 —— **ch2-A 先让 app 跑 EL1**，
-/// 做完 EL0 探针后如果发现 EL0 可用，把这里改成 `true` 即可（配合 batch.rs/`eret`）。
-pub const APP_RETURN_TO_EL0: bool = false;
+/// 目标特权级开关。
+/// ★ ch2-C 实测结论：**EL0 可用**（探针见 trap::probe_el0），所以 app 忠实跑 EL0，
+///   与 rCore 的 U-mode 语义一致。证据：EC=0x15 from EL0 连续两次往返，
+///   SPSR=0x3c0（M=0b0000 = EL0t）。
+pub const APP_RETURN_TO_EL0: bool = true;
 
 /// 中断/异常现场（rCore 里叫 TrapContext）
 #[repr(C)]

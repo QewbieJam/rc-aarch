@@ -1,0 +1,11 @@
+[package]
+name = "user_lib"
+version = "0.1.0"
+edition = "2024"
+
+# 对照 rCore ch2 的 user/Cargo.toml：
+#   rCore 依赖 riscv crate 来发 ecall；我们用 core::arch::asm! 直接写 svc，所以不需要依赖
+[dependencies]
+
+[profile.release]
+panic = "abort"

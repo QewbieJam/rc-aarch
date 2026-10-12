@@ -23,3 +23,6 @@ Thumbs.db
 # cell 配置的编译产物（由 scripts/build-cell.sh 生成）
 cells/*.o
 cells/*.cell
+
+# build.rs 生成的（ch2-C：把 user app 的 .bin 内嵌进内核镜像的汇编）
+os1-cell3/src/link_app.S
