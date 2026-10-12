@@ -220,3 +220,39 @@ self_test_svc:
     ldp     x21, x22, [sp], #16
     ldp     x19, x20, [sp], #16
     ret
+
+/* =========================================================================
+ * 5. EL0 探针（ch2-C 前置：决定 app 跑 EL0 还是 EL1）
+ *
+ *    背景：AArch64 在 **stage-1 MMU 关闭**时，内存属性被当作 Device-nGnRnE，
+ *          而架构**不允许 EL0 访问/取指 Device 内存** → 所以 rCore 那种
+ *          "U-mode + 不分页" 在 AArch64 上可能根本跑不起来（RISC-V 可以）。
+ *
+ *    做法：@eret 时把 SPSR_EL1.M 设成 0b0000（EL0t）→ 跳进一段只做 svc 的小代码：
+ *      - 若 EL0 能取指：以向量表 #8（Lower EL AArch64 Sync）进来 → EC=0x15
+ *      - 若不能：立即 Instruction Abort（EC=0x20，FAR=入口地址）
+ * ========================================================================= */
+    .section .text
+    .global enter_el0
+enter_el0:                          /* x0 = 入口地址, x1 = 栈顶 */
+    msr     sp_el0, x1
+    msr     elr_el1, x0
+    mov     x2, #0x3c0              /* DAIF 全屏蔽(0b1111<<6) + M=0 → EL0t */
+    msr     spsr_el1, x2
+    eret                            /* ★ 第一次真正"下到 EL0" */
+
+    .global el0_probe_stub
+el0_probe_stub:
+    svc     #0x42                   /* 未定义调用号 → 内核应回 -1 */
+    svc     #0x43                   /* 第二次：证明 "EL0 → EL1 → 回到 EL0" 往返正常 */
+    mov     x8, #93                 /* SYSCALL_EXIT */
+    mov     x0, #7                  /* 退出码 7 */
+    svc     #0                      /* → sys_exit(7)：ch2-B 里打印后停住 */
+    b       .                       /* 不该走到这（sys_exit 不返回）*/
+
+/* 探针用的 4KB 栈（放在 .bss.stack 里，linker 不会清零这一块）*/
+    .section .bss.stack, "aw", %nobits
+    .balign 16
+    .global el0_probe_stack_top
+el0_probe_stack_top:
+    .space 4096

@@ -22,6 +22,12 @@ unsafe extern "C" {
     safe fn __vector_table();
     /// 自测：返回"被写坏的寄存器个数"（0 = 全对）
     safe fn self_test_svc() -> usize;
+    /// EL0 探针：eret 到 EL0 执行 el0_probe_stub（不返回）
+    safe fn enter_el0(entry: usize, stack_top: usize);
+    /// EL0 探针里那段小代码（只做一次 svc 然后停住）
+    safe fn el0_probe_stub();
+    /// 探针用的栈顶（trap.S 的 .bss.stack 里）
+    static el0_probe_stack_top: u8;
 }
 
 /// 初始化：把向量表地址写进 VBAR_EL1（对应 rCore 的 `stvec::write(...)`）
@@ -95,22 +101,46 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
 
     match kind {
         ec::SVC64 => {
-            // ★ svc 是 4 字节定长指令：返回时必须 +4，否则 eret 回去又执行一次 svc
-            //   （对应 rCore 的 `cx.sepc += 4`）
-            cx.elr_el1 += 4;
-            let id = cx.x[8]; // 调用号放 x8（Linux ABI 习惯）
-            crate::println!("[trap]   -> syscall id={} (ch2-B 实现分发)", id);
+            // ★★ RISC-V→AArch64 移植大坑（本次实测踩到）：
+            //   rCore 要写 `cx.sepc += 4`，因为 RISC-V 的 sepc 指向 ecall **本身**；
+            //   AArch64 的 ELR_EL1 在 SVC 异常时已经指向 svc 的**下一条指令**，
+            //   这里再加 4 就会**跳过一条指令**（我们因此跳过了 stub 里的 `b .`，
+            //   跑进后面的代码，最后在 EL0 执行到 hvc → EC=0x00 死循环刷屏）。
+            //   ⇒ AArch64 这里**什么都不用改**。
+            let from = if spsr & 0xf == 0 { "EL0" } else { "EL1" };
+            // ABI：x8 = 调用号，x0/x1/x2 = 参数，返回值写回 x0
+            //（对照 rCore：x[17] = 调用号，x[10..12] = 参数，x[10] = 返回值）
+            let id = cx.x[8];
+            let ret = crate::syscall::syscall(id, [cx.x[0], cx.x[1], cx.x[2]]);
+            crate::println!(
+                "[trap]   -> svc from {}: id={} 返回 {} (写回 x0)",
+                from, id, ret
+            );
+            cx.x[0] = ret as usize;
         }
         ec::DABT_LOW | ec::DABT_CUR => {
-            // 对应 rCore 的 StoreFault / StorePageFault：打印后杀掉 app（ch2-D）
+            // 对应 rCore 的 StoreFault / StorePageFault（ch2-D 里改成 kill app）
             crate::println!("[trap]   -> Data Abort @ {:#x} (ch2-D 里改成 kill app)", far);
+            infinite_loop();
         }
         ec::IABT_LOW | ec::IABT_CUR => {
-            crate::println!("[trap]   -> Instruction Abort @ {:#x}", far);
+            // ★ EL0 探针的关键判据：EL0 若不能取指（Device 内存 + EL0 禁止访问），
+            //   就会立刻以 EC=0x20 落在这里，FAR = 那条 EL0 指令的地址
+            crate::println!(
+                "[trap]   -> Instruction Abort @ {:#x}  ← EL0 取指失败（ch2-C 的 app 只能跑 EL1）",
+                far
+            );
+            infinite_loop(); // ch2-D 里改成 kill app 换下一个
         }
         ec::UNKNOWN => {
-            // 对应 rCore 的 IllegalInstruction
-            crate::println!("[trap]   -> Unknown/Illegal instruction (ch2-D 里改成 kill app)");
+            // 对应 rCore 的 IllegalInstruction。
+            // ★ EL0 执行 hvc 就是这一类（hvc 在 EL0 是未定义指令）
+            crate::println!(
+                "[trap]   -> Unknown/Illegal instruction @ ELR={:#x} (ch2-D 里改成 kill app)",
+                elr
+            );
+            // 前进一条指令，避免"同一条非法指令 → 又回来"的死循环刷屏
+            cx.elr_el1 += 4;
         }
         _ => {
             crate::println!("[trap]   -> 尚未处理，先停在这里");
@@ -146,6 +176,44 @@ pub fn self_test() {
     } else {
         crate::println!("[trap] self test FAILED: {} 个寄存器被写坏", bad);
     }
+}
+
+/// ch2-B 自测：内核态发起一次真正的系统调用（`svc`，x8=SYSCALL_WRITE）
+pub fn syscall_test() {
+    let msg = b"[syscall] sys_write: hello from a syscall!\n";
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") crate::syscall::SYSCALL_WRITE, // 调用号
+            in("x0") 1usize,                        // fd = stdout
+            in("x1") msg.as_ptr() as usize,         // buf（内核 .rodata）
+            in("x2") msg.len(),                     // len
+            lateout("x0") ret,                      // 返回值写回 x0
+        );
+    }
+    crate::println!("[syscall] sys_write 返回 {}", ret);
+
+    // 调用号不在表里的情况：应当返回 -1（在 EL0 stub 里测第二个）
+    let bad: isize;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 0xdeadusize,
+            lateout("x0") bad,
+        );
+    }
+    crate::println!("[syscall] 未知调用号返回 {}", bad);
+}
+
+/// ch2-C 前置探针：EL0 到底能不能跑？
+pub fn probe_el0() -> ! {
+    let entry = el0_probe_stub as *const () as usize;
+    let stack_top = core::ptr::addr_of!(el0_probe_stack_top) as usize;
+    crate::println!("[probe] 准备 eret 到 EL0：入口={:#x} 栈顶={:#x}", entry, stack_top);
+    crate::println!("[probe] 如果看到 EC=0x15 说明 EL0 可用；EC=0x20 说明只能跑 EL1");
+    enter_el0(entry, stack_top);
+    unreachable!()
 }
 
 fn infinite_loop() -> ! {

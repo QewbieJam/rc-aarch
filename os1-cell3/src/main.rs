@@ -19,6 +19,7 @@ use core::arch::global_asm;
 //   （rCore ch2 的 main.rs 也是这么写的）
 #[macro_use]
 mod console;
+mod syscall;
 mod trap;
 
 // 把启动汇编嵌进二进制（对应 rCore 的 global_asm!(include_str!("entry.asm")))
@@ -54,9 +55,11 @@ pub extern "C" fn rust_main() -> ! {
 
     println!("[rc-aarch] ch2-A done: svc -> vector#4 -> trap_handler -> eret 全部正常");
 
-    loop {
-        core::hint::spin_loop();
-    }
+    // ③ ch2-B：内核态发起真正的系统调用（svc，x8=调用号）
+    trap::syscall_test();
+
+    // ④ ch2-C 前置探针：试试能不能下到 EL0（已实测：能 ✔）
+    trap::probe_el0()
 }
 
 /// panic 兜底（对应 rCore 的 lang_items.rs）
