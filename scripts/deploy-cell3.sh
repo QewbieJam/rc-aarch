@@ -1,14 +1,14 @@
 #!/bin/sh
 # 把 cell3 的配置 + Rust 内核送到 root cell，并在那里 create / load / start
 #   ROOTCELL=root@192.168.10.8 scripts/deploy-cell3.sh [kernel.bin]
-# 默认内核：os1/target/aarch64-unknown-none/release/rc-aarch-os1.bin
+# 默认内核：os-cell3/target/aarch64-unknown-none/release/rc-aarch-os1
 set -e
 
 # 无论从哪里调用，都切到仓库根（脚本在 <root>/scripts/ 下）
 cd "$(dirname "$0")/.."
 ROOTCELL=${ROOTCELL:-root@192.168.31.74}
 # 传 ELF（推荐，工具会读它的加载地址）或 .bin（脚本会自动补 -a 0xFA000000）
-BIN=${1:-os1/target/aarch64-unknown-none/release/rc-aarch-os1}
+BIN=${1:-os-cell3/target/aarch64-unknown-none/release/rc-aarch-os1}
 # ssh 连接复用：scp/ssh 多次调用只问一次密码
 # 允许外部覆盖（例如本机 /etc/ssh 所有权坏了时：SSHOPTS="-F /dev/null"）
 SSHOPTS="${SSHOPTS:--o ControlMaster=auto -o ControlPath=/tmp/rc-aarch-ssh-%r@%h:%p -o ControlPersist=120}"

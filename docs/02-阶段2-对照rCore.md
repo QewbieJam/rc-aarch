@@ -1,6 +1,6 @@
 # 📘 阶段 2：陷入/异常 + 系统调用 + 批处理 —— 对照 rCore ch2 逐项讲
 
-> 项目：rc-aarch ｜ 工程：`os1-cell3/`（MCS cell 版）+ 仓库根 `user/`（aarch64 用户程序）
+> 项目：rc-aarch ｜ 工程：`os-cell3/`（MCS cell 版）+ 仓库根 `user/`（aarch64 用户程序）
 > 状态：**✅ ch2-A / ch2-B / ch2-C 全部已在树莓派 4B 的 openEuler MCS + Jailhouse cell3 上跑通**
 > 更新：2026-10-12 ｜ 分支：`ch2`（存档点 `ch1-done`）
 > 相关：[[01-阶段1-对照rCore]] ｜ [[RPi4 MCS 内存布局与三个 Cell 的分工（750M 之谜）]]
@@ -212,21 +212,21 @@ rCore 那种"U-mode + 不分页"在 AArch64 上可能成立不了。
 
 | 文件 | 作用 | 对照 upstream |
 |---|---|---|
-| `os1-cell3/linker.ld` | 新增 `.vectors` 独立段（`ALIGN(2048)`，且**不能排在 `_start` 前面**）| `linker-qemu.ld` |
-| `os1-cell3/src/console.rs` | 升级为 `core::fmt::Write` + `print!/println!` | `os/src/console.rs` |
-| `os1-cell3/src/trap/trap.S` | 16 项向量表 + `SAVE/RESTORE_REGS` + `__restore` + EL0 探针 | `os/src/trap/trap.S` |
-| `os1-cell3/src/trap/context.rs` | `TrapContext`（34×8 字节 ABI）| `os/src/trap/context.rs` |
-| `os1-cell3/src/trap/mod.rs` | `VBAR_EL1` 初始化 + 按 `ESR_EL1.EC` 分发 + `fault_from` + `shutdown` | `os/src/trap/mod.rs` |
-| `os1-cell3/src/syscall/{mod,fs,process}.rs` | `syscall` 分发 / `sys_write`（带指针检查）/ `sys_exit` | `os/src/syscall/*` |
-| `os1-cell3/src/sync.rs` | `UPSafeCell`（不依赖 `lazy_static`）| `os/src/sync/up.rs` |
-| `os1-cell3/src/batch.rs` | `AppManager` / `KernelStack` / `UserStack` / `load_app` / `run_next_app` | `os/src/batch.rs` |
-| `os1-cell3/build.rs` | 编 user crate + `rust-objcopy` + 生成 `src/link_app.S` | `os/build.rs` |
-| `user/`（仓库根，**不在 os1-cell3 里**）| aarch64 用户程序 crate（`_start` 清 bss → `main` → `sys_exit`）| `user/`（同样在仓库根）|
+| `os-cell3/linker.ld` | 新增 `.vectors` 独立段（`ALIGN(2048)`，且**不能排在 `_start` 前面**）| `linker-qemu.ld` |
+| `os-cell3/src/console.rs` | 升级为 `core::fmt::Write` + `print!/println!` | `os/src/console.rs` |
+| `os-cell3/src/trap/trap.S` | 16 项向量表 + `SAVE/RESTORE_REGS` + `__restore` + EL0 探针 | `os/src/trap/trap.S` |
+| `os-cell3/src/trap/context.rs` | `TrapContext`（34×8 字节 ABI）| `os/src/trap/context.rs` |
+| `os-cell3/src/trap/mod.rs` | `VBAR_EL1` 初始化 + 按 `ESR_EL1.EC` 分发 + `fault_from` + `shutdown` | `os/src/trap/mod.rs` |
+| `os-cell3/src/syscall/{mod,fs,process}.rs` | `syscall` 分发 / `sys_write`（带指针检查）/ `sys_exit` | `os/src/syscall/*` |
+| `os-cell3/src/sync.rs` | `UPSafeCell`（不依赖 `lazy_static`）| `os/src/sync/up.rs` |
+| `os-cell3/src/batch.rs` | `AppManager` / `KernelStack` / `UserStack` / `load_app` / `run_next_app` | `os/src/batch.rs` |
+| `os-cell3/build.rs` | 编 user crate + `rust-objcopy` + 生成 `src/link_app.S` | `os/build.rs` |
+| `user/`（仓库根，**不在 os-cell3 里**）| aarch64 用户程序 crate（`_start` 清 bss → `main` → `sys_exit`）| `user/`（同样在仓库根）|
 | `user/src/bin/00hello_world.rs` | 第一个 app | 同 |
 
 **两个结构性注意点**：
 1. `user/` 必须在**仓库根**：cargo 会向上合并父目录的 `.cargo/config.toml`，
-   放在 `os1-cell3/` 里会同时吃到内核的 `-Tlinker.ld` 和自己的 `-Tsrc/linker.ld` → 链接报 "cannot find linker script"。
+   放在 `os-cell3/` 里会同时吃到内核的 `-Tlinker.ld` 和自己的 `-Tsrc/linker.ld` → 链接报 "cannot find linker script"。
    （upstream 的 `user/` 本来就在仓库根，是 `os/` 的兄弟目录。）
 2. `src/link_app.S` 是 `build.rs` 生成的（已加进 `.gitignore`）。
 
