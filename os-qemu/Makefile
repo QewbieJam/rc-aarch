@@ -1,7 +1,7 @@
 # rc-aarch 阶段1 构建脚本
 TARGET  := aarch64-unknown-none
 MODE    ?= release
-ELF     := target/$(TARGET)/$(MODE)/rc-aarch-os1
+ELF     := target/$(TARGET)/$(MODE)/rc-aarch-os
 QEMU    := qemu-system-aarch64
 QEMU_ARGS := -machine virt -cpu cortex-a72 -nographic -kernel $(ELF)
 

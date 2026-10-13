@@ -44,35 +44,62 @@
 
 ```
 rc-aarch/
-├── README.md                 ← 本文件（项目章程）
+├── README.md                    ← 本文件（项目章程）
 ├── docs/
-│   └── 01-阶段1-对照rCore.md  ← 逐行对照讲解（entry / linker / UART / bss）
-└── os1/                      ← 阶段 1 的 cargo 工程
-    ├── Cargo.toml
-    ├── .cargo/config.toml    ← target + 链接脚本 + 本地 target-dir
-    ├── linker.ld
-    ├── Makefile
-    └── src/
-        ├── boot.S            ← 启动汇编（对照 entry.asm）
-        └── main.rs           ← rust_main + UART + clear_bss + panic
+│   ├── 01-阶段1-对照rCore.md     ← ch1：裸机 hello（entry / linker / UART / bss）
+│   └── 02-阶段2-对照rCore.md     ← ch2：陷入/异常 + 系统调用 + 批处理
+├── os-qemu/                     ← QEMU 版内核工程（基址 0x40080000，PL011 UART）
+│   ├── Cargo.toml  .cargo/  linker.ld  Makefile
+│   └── src/{boot.S, main.rs}
+├── os-cell3/                    ← ★ MCS cell3 版内核工程（基址 0xFA000000，mini-UART + hvc）
+│   ├── Cargo.toml  .cargo/  linker.ld  Makefile  build.rs
+│   └── src/
+│       ├── boot.S               ← 启动汇编（对照 entry.asm）
+│       ├── main.rs              ← rust_main + clear_bss + panic
+│       ├── console.rs           ← print!/println!（hvc + mini-UART）
+│       ├── trap/{trap.S,mod.rs,context.rs}   ← 向量表 / TrapContext / 分发
+│       ├── syscall/{mod,fs,process}.rs       ← sys_write / sys_exit
+│       ├── sync.rs  batch.rs    ← UPSafeCell / 批处理
+│       └── link_app.S           ← build.rs 生成（内嵌 app，已 gitignore）
+├── user/                        ← aarch64 用户程序 crate（app 跑在 EL0，基址 0xFA100000）
+│   ├── Cargo.toml  .cargo/  src/linker.ld  src/{lib,syscall,console,lang_items}.rs
+│   └── src/bin/*.rs             ← 每个文件一个 app
+├── cells/                       ← Jailhouse cell 配置
+│   └── rpi4-rust-cell3.c              （.o/.cell 产物已 gitignore）
+└── scripts/
+    ├── build-cell.sh            ← .c → .cell（gcc -c + objcopy）
+    ├── deploy-cell3.sh          ← 编译产物 → scp → cell create/load/start → 打印控制台
+    └── try-cell.sh              ← 换 cell 配置做二分排查
 ```
 
 ## 五、环境依赖
 
 | 依赖 | 状态 | 安装命令 |
 |---|---|---|
-| `aarch64-unknown-none` target | 待装 | `rustup target add aarch64-unknown-none` |
-| `qemu-system-aarch64` | ❌ 缺 | `sudo apt install qemu-system-arm` |
-| `rust-objcopy` / `rust-objdump` | ✅ 已有 | — |
-
-**注意**：Vault 是 CIFS 网络盘，所以 `.cargo/config.toml` 里把 `target-dir` 指到了
-`/home/era/.cache/rc-aarch-target`（本地盘）——否则编译会很慢。
+| `aarch64-unknown-none` target | ✅ 已装 | `rustup target add aarch64-unknown-none` |
+| `rust-objcopy` / `rust-objdump` / `rust-nm` | ✅ 已有（`~/.cargo/bin`）| — |
+| `qemu-system-aarch64` | ❌ 缺（只影响 QEMU 版，不影响 cell3 上机）| `sudo apt install qemu-system-arm` |
+| 树莓派 4B + openEuler MCS 镜像 | ✅ | 局域网 `root@192.168.31.74` |
 
 ## 六、构建与运行
 
+### ① QEMU 版（`os-qemu/`，需要 `qemu-system-aarch64`）
 ```bash
-cd ~/Obsidian\ Vault/Rust/rc-aarch/os1
+cd ~/rc-aarch/os-qemu
 make build     # 编译
-make run       # 编译 + QEMU 运行（需要 qemu-system-aarch64）
-make disasm    # 反汇编看看入口
+make run       # 编译 + QEMU 运行
+make disasm    # 反汇编看入口
 ```
+
+### ② MCS cell3 版（`os-cell3/`，跑在树莓派上 —— 主力开发路径）
+```bash
+cd ~/rc-aarch/os-cell3
+cargo build --release          # 会顺带编译 ../user 里的 app（build.rs 负责）
+
+cd ~/rc-aarch
+SSHOPTS="-F /dev/null" ./scripts/deploy-cell3.sh \
+    os-cell3/target/aarch64-unknown-none/release/rc-aarch-os
+# 脚本会：编 .cell → scp → jailhouse enable（若未使能）→ destroy/create/load/start → 打印控制台
+```
+> 完整复现步骤（含验收标准与排错表）见 `docs/02-阶段2-对照rCore.md` 第九节。
+

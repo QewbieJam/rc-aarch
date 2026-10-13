@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "rc-aarch-os1"
+name = "rc-aarch-os"
 version = "0.1.0"

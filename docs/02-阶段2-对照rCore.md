@@ -245,3 +245,110 @@ rCore 那种"U-mode + 不分页"在 AArch64 上可能成立不了。
 
 > 好消息：**ch3 大概率也不用改 cell 配置**（定时器是 PPI，`irqchip.c` 里对 PPI/SGI 自动放行，
 > 只排除 hypervisor 自己用的 3 个）。
+
+---
+
+## 九、怎么复现（从零到跑通 ch2）
+
+### 9.1 前提检查（一次性）
+
+```bash
+# ① 工具链
+rustc --version && rustup target list --installed | grep aarch64-unknown-none
+which rust-objcopy rust-objdump rust-nm        # 通常在 ~/.cargo/bin
+
+# ② 板子在网、能 ssh（本机 /etc/ssh 所有权没修时，用 -F /dev/null 绕过）
+ping -c1 192.168.31.74
+ssh -F /dev/null -o StrictHostKeyChecking=accept-new root@192.168.31.74 \
+    'cat /sys/devices/jailhouse/enabled; jailhouse cell list'
+
+# ③ cell 配置在
+ls cells/rpi4-rust-cell3.c
+```
+
+### 9.2 三条命令（日常开发循环）
+
+```bash
+# ① 编内核（build.rs 会自动编 ../user 里的 app，并生成 src/link_app.S）
+cd ~/rc-aarch/os-cell3
+cargo build --release
+#   产物：target/aarch64-unknown-none/release/rc-aarch-os
+
+# ② 编 cell 配置 + scp + create/load/start + 打印控制台（一条命令搞定）
+cd ~/rc-aarch
+SSHOPTS="-F /dev/null" ./scripts/deploy-cell3.sh \
+    os-cell3/target/aarch64-unknown-none/release/rc-aarch-os
+
+# ③ 想回看控制台（脚本最后已经 cat 过一遍，这是第二次看）
+ssh -F /dev/null root@192.168.31.74 'cat /sys/devices/jailhouse/console'
+```
+
+> `SSHOPTS="-F /dev/null"` 是为了绕开本机坏掉的 `/etc/ssh`（见 §九.5）。
+> 若你已 `sudo chown -R root:root /etc/ssh` 修好，就**不需要**这个环境变量。
+
+### 9.3 期望输出（逐行对账表）
+
+| 期望输出 | 含义 | 对不上说明什么 |
+|---|---|---|
+| `[trap] self test PASSED (0 个寄存器被写坏)` | SAVE/RESTORE 的 34 个偏移全对 | 某个 `stp/ldp` 偏移写错（自测会报错数）|
+| `[rc-aarch] ch2-A done: svc -> vector#4 -> ...` | `svc` 从 EL1 落向量表 #4 | 向量表装错/`VBAR_EL1` 没写 |
+| `[syscall] sys_write 返回 43` | ch2-B 分发正确（43 = 消息长度）| 调用号/参数寄存器约定错了 |
+| `[kernel] num_app = 1` | `batch::init()` 从 `_num_app` 读到 app 表 | `build.rs`/`link_app.S` 没生效 |
+| `[kernel] load app_0 (8718 字节) → 0xfa100000` | 把 app 拷到了 `[1] RAM` 区 | `APP_BASE_ADDRESS` 或 app 链接基址不一致 |
+| `EC=0x15 ... SPSR=0x600003c0 (from EL0)` | ★ app 真的跑在 EL0 并发 `svc` | 看到 `from EL1` 说明 `APP_RETURN_TO_EL0=false` |
+| `Hello, world from EL0 (user mode)!` | app 通过 `sys_write` 打印成功 | 只出现前半句 → mini-UART THRE 没轮询（ch1 坑 1）|
+| `Application exited with code 0` | app 调 `sys_exit`，内核接住 | — |
+| `All apps completed!` | 批处理收尾正常 | — |
+
+### 9.4 只验证构建产物（不上板也能查一半）
+
+```bash
+cd ~/rc-aarch/os-cell3 && cargo build --release
+ELF=target/aarch64-unknown-none/release/rc-aarch-os
+
+rust-objdump -h $ELF | sed -n '4,12p'     # 段布局：_start 在 0xfa000000；.vectors 在 2KB 边界
+rust-nm $ELF | grep -E '_start$|__vector_table|_num_app|app_0_start|app_0_end'
+rust-nm $ELF | grep -iE 'STACK'           # ★ 栈必须是 b(.bss)，不能是 r(.rodata)（见坑 2）
+python3 -c "print(hex(0x$(rust-nm $ELF | awk '/__vector_table/{print $1}') & 0x7ff))"   # 必须是 0x0
+```
+
+向量表逐槽核对（必须完全一致）：
+
+```
++0x200 (#4 Current EL SPx Sync)   → b sync_handler
++0x280 (#5 IRQ)                   → b irq_handler
++0x400 (#8 Lower EL AArch64 Sync) → b sync_handler
++0x480 (#9 IRQ)                   → b irq_handler
+其余 12 项                        → b unhandled
+```
+
+### 9.5 排错表
+
+| 现象 | 真因 | 处理 |
+|---|---|---|
+| `No route to host` / `ping` 不通 | 板子没开机或掉了网 | 开机；`nmap -sn 192.168.31.0/24` 找 IP |
+| `REMOTE HOST IDENTIFICATION HAS CHANGED` | **MVM 是 initramfs**，重启后 `/etc/ssh/ssh_host_*` 重新生成 | `ssh-keygen -R 192.168.31.74`，或加 `-o StrictHostKeyChecking=accept-new` |
+| `Permission denied (publickey,keyboard-interactive)` | 重启后 `/root/.ssh/authorized_keys` 丢失（内存盘）| 用密码（`keyboard-interactive`，密码 `openEuler@2021`）把公钥装回去 |
+| `cell create/load/start` 全报 `Invalid argument` | **jailhouse 未使能**（重启后丢），且未使能时 `cell list` 只打印空、不报错 | `cat /sys/devices/jailhouse/enabled`（=1 才算）；`jailhouse enable /usr/share/jailhouse/cells/rpi4.cell`（脚本已自动）|
+| `cell load` 报 EINVAL + `instruction abort at 0x0` | 镜像不在 LOADABLE 区 / 没写 `cpu_reset_address` | 见 ch1 §5.3 坑 2、3 |
+| 只打印第一个字符 | mini-UART 没等 THRE(bit5) | 见 ch1 §5.3 坑 1 |
+| `EC=0x00` 疯狂刷屏 | EL0 执行了未定义指令（例如返回时 `ELR` 加多了 4）| 见 §五 坑 1 |
+| `FATAL: unhandled trap` + 板子无响应 | 越界访问打到了 hypervisor | **断电重启**；检查 syscall 指针检查；见 §五 坑 3 |
+| 输出里出现 `FATAL: instruction abort` | 取指越界（同上，系统级）| 同上 |
+
+### 9.6 清理 / 从头再来
+
+```bash
+# 只销毁 cell3（不动 root cell / guest）
+ssh -F /dev/null root@192.168.31.74 'jailhouse cell destroy --name rc-aarch'
+
+# 彻底重编（内核 + app）
+cd ~/rc-aarch/os-cell3 && cargo clean && rm -rf ../user/target && cargo build --release
+
+# 换一台机器时
+git clone https://atomgit.com/EraFei/rc-aarch.git && cd rc-aarch && git switch ch2
+```
+
+> **不需要重烧 SD 卡**：cell3 是运行时装配的（`.cell` + ELF 都放 `/tmp`），
+> 只有当你要改 root cell 内核/驱动、`mem=`、`config.txt`、guest rootfs，
+> 或者想把 cell3 配置永久装进镜像时才需要动镜像（详见 README §六）。

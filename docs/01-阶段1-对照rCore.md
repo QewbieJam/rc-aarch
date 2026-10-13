@@ -1,6 +1,6 @@
 # 📘 阶段 1：AArch64 裸机 Hello —— 对照 rCore ch1 逐行讲
 
-> 项目：rc-aarch ｜ 工程：`os-cell3/`（MCS cell 版）；`os1/` 保留为 QEMU 版
+> 项目：rc-aarch ｜ 工程：`os-cell3/`（MCS cell 版）；`os-qemu/` 保留为 QEMU 版
 > 状态：**✅ 已在树莓派 4B 的 openEuler MCS + Jailhouse cell3 上跑通**（2026-09-23）
 > 更新：2026-09-23
 
@@ -19,7 +19,7 @@
 
 ---
 
-## 二、逐行对照：rCore ch1 ↔ rc-aarch os1
+## 二、逐行对照：rCore ch1 ↔ rc-aarch os-qemu
 
 ### ① 启动汇编 `entry.asm` ↔ `boot.S`
 
@@ -42,7 +42,7 @@
 
 | rCore | rc-aarch | 说明 |
 |---|---|---|
-| `BASE_ADDRESS = 0x80200000` | `os1/` = 0x40080000（QEMU virt）<br>`os-cell3/` = **0xFA000000**（cell3 的 LOADABLE 区）| RPi/RustSBI 用 0x80200000；QEMU virt 的 RAM 从 0x40000000 起 |
+| `BASE_ADDRESS = 0x80200000` | `os-qemu/` = 0x40080000（QEMU virt）<br>`os-cell3/` = **0xFA000000**（cell3 的 LOADABLE 区）| RPi/RustSBI 用 0x80200000；QEMU virt 的 RAM 从 0x40000000 起 |
 | `*(.text.entry)` 排第一 | `KEEP(*(.text.entry))` | ★ 同一个"入口契约" |
 | `.bss : { *(.bss.stack) sbss=.; ... }` | `.bss : { *(.bss.stack) __bss_start=.; ... }` | 栈**不**被清零（同 rCore） |
 | `sbss` / `ebss` | `__bss_start` / `__bss_end` | 名字不同，角色相同 |
@@ -54,14 +54,14 @@
 rCore:     println! → console::print → Stdout.write_str → sbi::console_putchar
                                                             → sbi_rt → [ecall] → RustSBI 代写 UART
 
-os1:       print()  → uart_putc      → volatile 写 0x0900_0000（QEMU virt 的 PL011 数据寄存器）
+os-qemu:       print()  → uart_putc      → volatile 写 0x0900_0000（QEMU virt 的 PL011 数据寄存器）
 
 os-cell3: print()  → uart_putc      → ① hvc #0x4a48 让 hypervisor 往控制台写一个字
                                      → ② volatile 写 0xFE215040（RPi4 mini-UART 数据寄存器）
                                          写之前必须轮询 0xFE215054 的 THRE 位（见 §5.3 坑 1）
 ```
 
-**本质区别**：rCore 通过 **ecall 求 M-mode 固件**代劳；rc-aarch 要么**直接写 MMIO**（os1），
+**本质区别**：rCore 通过 **ecall 求 M-mode 固件**代劳；rc-aarch 要么**直接写 MMIO**（os-qemu），
 要么**求 EL2 的 hypervisor**（os-cell3 的 hvc）；而 cell3 里"直接写 MMIO"也是允许的，因为 UART 已经划给了它。
 这也是 ch1 反汇编里 `li a7, 1; ecall` 与这里 `mov w8, #0x9000000; strb` 的区别。
 
@@ -77,14 +77,14 @@ os-cell3: print()  → uart_putc      → ① hvc #0x4a48 让 hypervisor 往控�
 
 ## 三、实测：构建产物分析
 
-> 本节的前两张表是 **`os1/`（QEMU 版，基址 0x40080000）** 的产物；
+> 本节的前两张表是 **`os-qemu/`（QEMU 版，基址 0x40080000）** 的产物；
 > `os-cell3/`（基址 0xFA000000）的产物见 "字符串在哪" 一节里的第二段。
 
 ```bash
-rust-objdump -h   target/aarch64-unknown-none/release/rc-aarch-os1
-rust-readobj --program-headers target/aarch64-unknown-none/release/rc-aarch-os1
+rust-objdump -h   target/aarch64-unknown-none/release/rc-aarch-os
+rust-readobj --program-headers target/aarch64-unknown-none/release/rc-aarch-os
 ```
-（在 `os1/` 或 `os-cell3/` 目录下执行，产物就在各自的 `target/` 里，已被 `.gitignore` 排除）
+（在 `os-qemu/` 或 `os-cell3/` 目录下执行，产物就在各自的 `target/` 里，已被 `.gitignore` 排除）
 
 ```
 段布局：
@@ -182,7 +182,7 @@ cells/rpi4-rust-cell3.c                     /tmp/rc-aarch.cell
 ```bash
 # 在 ~/rc-aarch 下（脚本会自动 enable、destroy 旧的、create/load/start）
 ROOTCELL=root@<root cell IP> ./scripts/deploy-cell3.sh \
-  os-cell3/target/aarch64-unknown-none/release/rc-aarch-os1     # 传 ELF（推荐）
+  os-cell3/target/aarch64-unknown-none/release/rc-aarch-os     # 传 ELF（推荐）
 ```
 > 传 `.bin` 也可以，脚本会自动补 `-a 0xFA000000` ✔
 
@@ -226,11 +226,11 @@ Started cell "rc-aarch"
 
 ```bash
 sudo apt install qemu-system-arm        # 提供 qemu-system-aarch64
-cd ~/rc-aarch/os1                       # 注意用 os1/，不是 os-cell3/
+cd ~/rc-aarch/os-qemu                       # 注意用 os-qemu/，不是 os-cell3/
 make run
 ```
 
-> ⚠️ QEMU 跑的是 `os1/`，**不是** `os-cell3/`：`os-cell3/` 里的 `hvc #0x4a48` 必须由
+> ⚠️ QEMU 跑的是 `os-qemu/`，**不是** `os-cell3/`：`os-cell3/` 里的 `hvc #0x4a48` 必须由
 > EL2 的 hypervisor 处理，裸 QEMU 没有 EL2 → 会直接异常。两个目录就是"同一份代码、两套落地环境"。
 
 预期输出：
