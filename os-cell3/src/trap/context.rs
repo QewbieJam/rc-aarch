@@ -45,9 +45,13 @@ impl TrapContext {
     ///
     /// ⚠️ **不要**在这里 `mrs spsr_el1`：在非 trap 路径下（比如第一次启动 app）
     ///    读到的 SPSR_EL1 是上一次异常留下的**陈旧值**。所以这里从零构造：
-    ///    `DAIF[3:0] = 1111`（进入 app 时先屏蔽中断）+ 目标 EL。
+    ///    `DAIF` = 屏蔽 D/A/F、**放行 I（IRQ）** + 目标 EL。
+    ///    ch3 起必须放行 I，否则 app 在 EL0 永远不会被定时器打断（没法抢占）。
     pub fn app_init_context(entry: usize, sp: usize) -> Self {
-        let mut spsr_el1 = 0b1111 << 6; // D、A、I、F 全屏蔽
+        // ch3：app 必须能被定时器抢占 → 不能屏蔽 I（IRQ）
+        //   DAIF = D(bit9) A(bit8) I(bit7) F(bit6)
+        //   屏蔽 D/A/F、放行 I → 0b1101
+        let mut spsr_el1 = 0b1101 << 6;
         // SPSR_EL1.M[3:0]：0b0000 = EL0t，0b0101 = EL1h（用 SP_ELx）
         spsr_el1 |= if APP_RETURN_TO_EL0 { 0b0000 } else { 0b0101 };
         Self {

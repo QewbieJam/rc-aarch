@@ -1,4 +1,4 @@
-//! 用户库（ch2-C）—— 对照 rCore ch2 的 `user/src/lib.rs`
+//! 用户库（ch3）—— 对照 rCore ch3 的 `user/src/lib.rs`
 //!
 //! 每个 app（`src/bin/*.rs`）只写一个 `#[unsafe(no_mangle)] fn main() -> i32`，
 //! 由这里的 `_start()` 负责：清 .bss → 调 main → 用 `sys_exit` 退出。
@@ -58,4 +58,14 @@ pub fn write(fd: usize, buf: &[u8]) -> isize {
 /// 对应 rCore 的 `pub fn exit(exit_code: i32) -> isize`
 pub fn exit(exit_code: i32) -> isize {
     sys_exit(exit_code)
+}
+
+/// ch3：主动让出 CPU（对应 rCore 的 `pub fn yield_() -> isize`）
+pub fn yield_() -> isize {
+    sys_yield()
+}
+
+/// ch3：读毫秒时间（对应 rCore 的 `pub fn get_time() -> isize`）
+pub fn get_time() -> isize {
+    sys_get_time()
 }

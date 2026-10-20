@@ -142,10 +142,29 @@ __restore:
     RESTORE_REGS
     eret
 
+/* __restore_sp：ch3 任务第一次被调度时从这里进 EL0
+ *
+ *   和 __restore 唯一的区别：**地址直接来自 sp**，不从 x0 取。
+ *   因为 __switch 只能恢复 ra/sp/callee-saved —— x0 是调用者保存寄存器，
+ *   跨 __switch 传递不了参数。于是约定：sp 就等于该任务内核栈上的 TrapContext。
+ *
+ *   控制流：task_cx.ra = __restore_sp，task_cx.sp = &TrapContext
+ *   （★ 这里不能写花括号：global_asm! 会把 .S 当格式串解析，花括号要转义）
+ *           __switch → ret 到这里 → 恢复现场 → eret 到 EL0
+ */
+    .global __restore_sp
+__restore_sp:
+    RESTORE_REGS
+    eret
+
+/* IRQ 入口（ch3）：和同步异常一样要保存/恢复现场，因为要 eret 回被打断的地方。
+ * 区别只是"进来之后调谁"：同步异常按 ESR_EL1.EC 分发，IRQ 走 GIC 的 IAR/EOIR。 */
 irq_handler:
-    /* ch3 在这里实现：读 GICC_IAR → 处理定时器 → 写 GICC_EOIR
-     * ch2 没有中断，走到这里说明哪里不对 → 交给 panic 路径打印 */
-    b       unhandled
+    SAVE_REGS
+    mov     x0, sp
+    bl      irq_dispatch            /* ← Rust：读 IAR → 处理 → 写 EOIR */
+    RESTORE_REGS
+    eret
 
 unhandled:
     /* 不保存现场（不打算返回）：交给 Rust 打印 ESR/ELR/FAR 后死循环 */
