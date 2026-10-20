@@ -12,11 +12,12 @@ extern crate user_lib;
 use user_lib::{exec, exit, fork, getpid, waitpid};
 
 /// 依次跑三个 app：文件读写、cat 文件、进程全家桶
-const APPS: [&str; 5] = [
+const APPS: [&str; 6] = [
     "filetest_simple\0",
     "cat_filea\0",
     "pipetest\0",
     "pipe_large_test\0",
+    "sig_test\0",
     "forktest\0",
 ];
 

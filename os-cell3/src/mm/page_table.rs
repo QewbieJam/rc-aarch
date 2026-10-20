@@ -285,6 +285,18 @@ pub fn translated_str(token: usize, ptr: *const u8) -> alloc::string::String {
     string
 }
 
+/// 把用户指针指向的 T 读成内核只读引用（ch7：`sigaction` 读用户传进来的结构体）
+pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
+    let page_table = PageTable::from_token(token);
+    let va = ptr as usize;
+    let vpn = VirtAddr::from(va).floor();
+    let pte = page_table
+        .translate(vpn)
+        .unwrap_or_else(|| panic!("用户地址 {:#x} 没有映射", va));
+    assert!(pte.is_user(), "用户地址 {:#x} 指向内核页", va);
+    unsafe { &*(pte.ppn().get_bytes_array().as_ptr().add(va & 0xfff) as *const T) }
+}
+
 /// 把用户指针指向的 T 变成内核可写引用（ch5 的 exit_code、ch7 的 pipe fd 数组）
 /// —— 对照 upstream 的 `translated_refmut`
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {

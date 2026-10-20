@@ -26,8 +26,8 @@ pub use frame_allocator::{
 };
 pub use memory_set::{MemorySet, kernel_token, remap_test};
 pub use page_table::{
-    PTEFlags, PageTable, PageTableEntry, UserBuffer, translated_byte_buffer, translated_refmut,
-    translated_str,
+    PTEFlags, PageTable, PageTableEntry, UserBuffer, translated_byte_buffer, translated_ref,
+    translated_refmut, translated_str,
 };
 
 /// 初始化堆 → 页帧分配器 → 内核地址空间 → 打开 MMU

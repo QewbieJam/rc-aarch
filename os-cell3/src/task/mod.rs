@@ -15,10 +15,12 @@
 //!     而不是直接从调度器消失；
 //!   - 第一个进程固定是 `initproc`（pid 1），它退出就意味着系统该关机了。
 
+mod action;
 mod context;
 mod manager;
 mod pid;
 mod processor;
+mod signal;
 mod switch;
 
 #[allow(clippy::module_inception)]
@@ -29,8 +31,10 @@ use crate::sync::UPSafeCell;
 use alloc::sync::Arc;
 use task::{TaskControlBlock, TaskStatus};
 
+pub use action::SignalAction;
 pub use context::TaskContext;
-pub use manager::add_task;
+pub use manager::{add_task, pid2task, remove_from_pid2task};
+pub use signal::{MAX_SIG, SignalFlags};
 pub use processor::{
     current_task, current_task_id, current_user_token, run_tasks, schedule, take_current_task,
 };
@@ -79,6 +83,8 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next(exit_code: i32) -> ! {
     let task = take_current_task().expect("没有正在运行的进程");
     let pid = task.getpid();
+    // ch7：从 pid→TCB 表里摘掉（kill(pid) 之后再也找不到它）
+    remove_from_pid2task(pid);
 
     // ★ initproc 退出 = 系统该关了（对应 upstream 的 IDLE_PID 判断）
     if pid == IDLE_PID {
@@ -139,4 +145,116 @@ pub fn change_program_brk(size: i32) -> Option<usize> {
     } else {
         None
     }
+}
+
+// ===========================================================================
+// ch7：信号
+// ===========================================================================
+
+/// 给当前进程挂一个待处理信号（异常处理也会用：缺页→SIGSEGV、非法指令→SIGILL）
+pub fn current_add_signal(signal: SignalFlags) {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.signals.insert(signal);
+}
+
+/// 内核自己处理的信号（SIGKILL/SIGSTOP/SIGCONT）
+fn call_kernel_signal_handler(signal: SignalFlags) {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if signal == SignalFlags::SIGSTOP {
+        inner.frozen = true;
+        inner.signals.remove(SignalFlags::SIGSTOP);
+    } else if signal == SignalFlags::SIGCONT {
+        if inner.signals.contains(SignalFlags::SIGCONT) {
+            inner.signals.remove(SignalFlags::SIGCONT);
+            inner.frozen = false;
+        }
+    } else {
+        // SIGKILL（以及默认动作就是"杀"的其它内核信号）
+        inner.killed = true;
+    }
+}
+
+/// 把信号交给用户注册的处理函数：备份现场，把 ELR 改成 handler，x0 = 信号号
+///
+/// ★ 和 RISC-V 的 POSIX 实现不同，upstream 这里**不改用户栈**（没有 SignalContext /
+///   trampoline）：处理函数必须自己调用 `sigreturn()` 回到被中断的现场
+///   （备份在 TCB 的 `trap_ctx_backup` 里）。AArch64 上照抄，省掉一堆栈布局的坑。
+fn call_user_signal_handler(sig: usize, signal: SignalFlags) {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    let handler = inner.signal_actions.table[sig].handler;
+    if handler != 0 {
+        inner.handling_sig = sig as isize;
+        inner.signals.remove(signal);
+        // 备份现场
+        let trap_ctx = inner.get_trap_cx();
+        inner.trap_ctx_backup = Some(*trap_ctx);
+        // 改现场：跳到处理函数，x0 = 信号号
+        trap_ctx.elr_el1 = handler;
+        trap_ctx.x[0] = sig;
+    } else {
+        // handler == 0：默认动作。错误类信号会留给 check_signals_error 去结束进程；
+        // 其它信号就当作忽略（upstream 也是只打印一行）。
+    }
+}
+
+/// 扫一遍 pending 信号，能处理就处理
+fn check_pending_signals() {
+    for sig in 0..=MAX_SIG {
+        let task = current_task().unwrap();
+        let task_inner = task.inner_exclusive_access();
+        let signal = SignalFlags(1u32 << sig);
+        if task_inner.signals.contains(signal) && !task_inner.signal_mask.contains(signal) {
+            // 正在处理某个信号时，它的 handler.mask 里列出的信号要再屏蔽
+            let mut masked = false;
+            let handling_sig = task_inner.handling_sig;
+            if handling_sig != -1 {
+                masked = task_inner.signal_actions.table[handling_sig as usize]
+                    .mask
+                    .contains(signal);
+            }
+            if masked {
+                continue;
+            }
+            drop(task_inner);
+            drop(task);
+            if signal == SignalFlags::SIGKILL
+                || signal == SignalFlags::SIGSTOP
+                || signal == SignalFlags::SIGCONT
+                || signal == SignalFlags::SIGDEF
+            {
+                call_kernel_signal_handler(signal);
+            } else {
+                call_user_signal_handler(sig, signal);
+                return;
+            }
+        }
+    }
+}
+
+/// 每次从内核返回用户态之前调用（对照 upstream 的 `handle_signals`）
+///
+/// 被 SIGSTOP 冻住的进程会一直让出 CPU，直到 SIGCONT。
+pub fn handle_signals() {
+    loop {
+        check_pending_signals();
+        let (frozen, killed) = {
+            let task = current_task().unwrap();
+            let inner = task.inner_exclusive_access();
+            (inner.frozen, inner.killed)
+        };
+        if !frozen || killed {
+            break;
+        }
+        suspend_current_and_run_next();
+    }
+}
+
+/// 当前进程有没有"必须退出"的信号（对照 upstream 的 `check_signals_error_of_current`）
+pub fn check_signals_error_of_current() -> Option<(i32, &'static str)> {
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    inner.signals.check_error()
 }

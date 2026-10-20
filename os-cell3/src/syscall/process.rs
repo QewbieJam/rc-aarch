@@ -11,10 +11,10 @@
 //! exec 的语义：把当前进程的地址空间整个换掉，从新 ELF 的入口重新开始跑。
 //! 注意它是"换汤不换药"—— pid、父子关系、内核栈都不变。
 
-use crate::mm::{translated_refmut, translated_str};
+use crate::mm::{translated_ref, translated_refmut, translated_str};
 use crate::task::{
-    add_task, current_task, current_user_token, exit_current_and_run_next,
-    suspend_current_and_run_next,
+    MAX_SIG, SignalAction, SignalFlags, add_task, current_task, current_user_token,
+    exit_current_and_run_next, pid2task, suspend_current_and_run_next,
 };
 use crate::timer::get_time_ms;
 use alloc::sync::Arc;
@@ -114,5 +114,89 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         found_pid as isize
     } else {
         -2
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ch7：信号
+// ---------------------------------------------------------------------------
+
+/// 给某个进程发信号（对照 upstream 的 `sys_kill`）
+///
+/// `signum` 为 0 时是 SIGDEF（Linux 里用来"探测进程存在"），我们也允许。
+pub fn sys_kill(pid: usize, signum: i32) -> isize {
+    if signum < 0 || signum as usize > MAX_SIG {
+        return -1;
+    }
+    if let Some(task) = pid2task(pid) {
+        if let Some(flag) = SignalFlags::from_bits(1u32 << signum) {
+            let mut inner = task.inner_exclusive_access();
+            if inner.signals.contains(flag) {
+                return -1; // 同一个信号还没处理完，别重复挂
+            }
+            inner.signals.insert(flag);
+            0
+        } else {
+            -1
+        }
+    } else {
+        -1
+    }
+}
+
+/// 设置信号处理函数（对照 upstream 的 `sys_sigaction`）
+pub fn sys_sigaction(
+    signum: i32,
+    action: *const SignalAction,
+    old_action: *mut SignalAction,
+) -> isize {
+    let token = current_user_token();
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if signum < 0 || signum as usize > MAX_SIG {
+        return -1;
+    }
+    if action.is_null() || old_action.is_null() {
+        return -1;
+    }
+    let flag = SignalFlags(1u32 << signum);
+    // SIGKILL / SIGSTOP 不允许用户接管（和 Linux 一致）
+    if flag == SignalFlags::SIGKILL || flag == SignalFlags::SIGSTOP {
+        return -1;
+    }
+    let prev = inner.signal_actions.table[signum as usize];
+    *translated_refmut(token, old_action) = prev;
+    inner.signal_actions.table[signum as usize] = *translated_ref(token, action);
+    0
+}
+
+/// 设置信号屏蔽字（对照 upstream 的 `sys_sigprocmask`）
+pub fn sys_sigprocmask(mask: u32) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    let old = inner.signal_mask;
+    if let Some(flag) = SignalFlags::from_bits(mask) {
+        inner.signal_mask = flag;
+        old.bits() as isize
+    } else {
+        -1
+    }
+}
+
+/// 从信号处理函数返回（对照 upstream 的 `sys_sigreturn`）
+///
+/// 恢复进 handler 之前备份的 TrapContext；返回值就是恢复后的 x0，
+/// 这样 trap_handler 写回 x0 时不会把现场改坏。
+pub fn sys_sigreturn() -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.handling_sig = -1;
+    let cx = inner.get_trap_cx();
+    match inner.trap_ctx_backup.take() {
+        Some(backup) => {
+            *cx = backup;
+            cx.x[0] as isize
+        }
+        None => -1,
     }
 }

@@ -31,10 +31,7 @@ unsafe extern "Rust" {
 #[unsafe(link_section = ".text.entry")]
 pub extern "C" fn _start() -> ! {
     clear_bss();
-    unsafe {
-        exit(main());
-    }
-    panic!("sys_exit 之后不应该返回！");
+    unsafe { exit(main()) }
 }
 
 /// 清 .bss：链接器只把"文件里有的字节"装进 .bin，
@@ -49,6 +46,61 @@ fn clear_bss() {
 }
 
 use syscall::*;
+
+// ---- ch7：信号 ----
+/// 信号处理动作（和内核的 `SignalAction` 布局必须一致：16 字节）
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+pub struct SignalAction {
+    pub handler: usize,
+    pub mask: u32,
+}
+
+impl Default for SignalAction {
+    fn default() -> Self {
+        Self {
+            handler: 0,
+            mask: 0,
+        }
+    }
+}
+
+/// 常用信号号（Linux 编号）
+pub const SIGDEF: i32 = 0;
+pub const SIGKILL: i32 = 9;
+pub const SIGUSR1: i32 = 10;
+pub const SIGSEGV: i32 = 11;
+pub const SIGUSR2: i32 = 12;
+pub const SIGCONT: i32 = 18;
+pub const SIGSTOP: i32 = 19;
+
+/// 给某个进程发信号（`signo=0` 是 SIGDEF，Linux 里用来探测进程存在）
+pub fn kill(pid: usize, signo: i32) -> isize {
+    sys_kill(pid, signo)
+}
+
+/// 设置信号处理函数；`old_action` 非空时回填旧的处理动作
+pub fn sigaction(
+    signum: i32,
+    action: Option<&SignalAction>,
+    old_action: Option<&mut SignalAction>,
+) -> isize {
+    sys_sigaction(
+        signum,
+        action.map_or(core::ptr::null(), |a| a),
+        old_action.map_or(core::ptr::null_mut(), |a| a),
+    )
+}
+
+/// 设置/清空信号屏蔽字（返回旧的）
+pub fn sigprocmask(mask: u32) -> isize {
+    sys_sigprocmask(mask)
+}
+
+/// 从信号处理函数返回（必须调用，否则处理函数返回不了）
+pub fn sigreturn() -> isize {
+    sys_sigreturn()
+}
 
 // ---- ch6：打开标志（和 Linux/easy-fs 一致）----
 pub const O_RDONLY: u32 = 0;

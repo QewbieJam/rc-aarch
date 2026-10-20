@@ -1,8 +1,8 @@
 # 📘 阶段 7：进程间通信（管道）—— 对照 rCore ch7 逐项讲
 
 > 项目：rc-aarch ｜ 工程：`os-cell3/` + `easy-fs/` + `user/`
-> 状态：**✅ ch7 的管道部分已在树莓派 4B 的 openEuler MCS + Jailhouse cell3 上跑通**
-> （File trait 重构、`pipe(59)`/`dup(24)`、32 字节环形缓冲、阻塞读写、父子进程传 3000 字节）
+> 状态：**✅ ch7 的内核部分已完成并在树莓派 4B 的 openEuler MCS + Jailhouse cell3 上跑通**
+> （File trait、`pipe(59)`/`dup(24)`、阻塞读写；`kill/sigaction/sigprocmask/sigreturn`）
 > 更新：2026-10-21 ｜ 分支：`ch7`（从 ch6 的 `cd2563a` 分出）
 > 相关：[[06-阶段6-对照rCore]] ｜ [[05-阶段5-对照rCore]] ｜ [[04-阶段4-对照rCore]]
 
@@ -21,6 +21,11 @@
 | EOF：所有写端关闭 → 读端返回 0 | ✅ | pipetest 子进程读到 13 字节后正常退出 |
 | fork 继承 fd（父子共享同一根管道）| ✅ | 父子分别持读/写端 |
 | 既有能力回归 | ✅ | filetest/cat/forktest 全过；停机页帧 7737/8027 |
+| **信号**：装 handler + kill 自己 + sigreturn | ✅ | `[sig] ★ 进入信号处理函数` → `① handler + sigreturn 正常` |
+| 信号屏蔽（sigprocmask）| ✅ | 屏蔽时 kill 挂起，解除后补投 |
+| 非法 sigaction | ✅ | 信号号 50 → -1 |
+| SIGKILL 杀子进程 | ✅ | `waitpid=4 code=-9` |
+| 异常 → SIGSEGV/SIGILL | ✅ | 缺页/非法指令挂信号，没 handler 就以 -11/-4 退出 |
 
 ---
 
@@ -69,6 +74,17 @@ $ git diff --stat origin/ch6 origin/ch7 -- os/
 4. **系统调用**：`pipe(59)`（往用户 `usize[2]` 写两个 fd）、`dup(24)`；
    `read/write` 不再特判 stdout，统一查 fd 表。
 
+5. **信号**（`kill(129)/sigaction(134)/sigprocmask(135)/sigreturn(139)`）：
+   - TCB 里加 `signals / signal_mask / handling_sig / signal_actions / killed / frozen /
+     trap_ctx_backup`；
+   - `current_add_signal`：缺页→SIGSEGV、非法指令→SIGILL；
+   - 每次从内核返回用户态前（**同步异常和 IRQ 两条路径**）调 `handle_signals()`：
+     有 handler 的信号 → 备份 TrapContext、`elr_el1 = handler`、`x0 = 信号号`，
+     处理函数里必须调 `sigreturn()` 恢复现场；
+     没有 handler 的错误信号 → 按 `check_error` 映射成退出码（SEGV=-11、ILL=-4、KILL=-9）；
+   - `SIGSTOP/SIGCONT` 用 `frozen` + 调度让出实现；
+   - `kill(pid)` 需要 pid→TCB 表（`BTreeMap`，`add_task` 时登记、进程退出时摘除）。
+
 ---
 
 ## 四、逐项对照
@@ -82,7 +98,7 @@ $ git diff --stat origin/ch6 origin/ch7 -- os/
 | `fd_table: Vec<Option<Arc<dyn File>>>` | **同** |
 | `Stdin` 用 `console_getchar` 轮询 | 我们还没有 UART 输入，先返回 0（EOF）；**TODO** |
 | `sys_exec` 带 argv（cmdline_args）| 没做，仍是 `exec(path)` |
-| 信号（kill/sigaction/sigprocmask/sigreturn）| **没做**（下一节）|
+| 信号（kill/sigaction/sigprocmask/sigreturn）| **同**（见下面"信号的 AArch64 适配"）|
 
 ---
 
@@ -202,14 +218,41 @@ RELOAD=1 ROOTCELL=root@192.168.31.75 \
 
 ---
 
-## 九、没做完的（ch7 剩余 / 下一步）
+## 九、信号的 AArch64 适配（几个要点）
 
-1. **信号**：`kill(129)/sigaction(134)/sigprocmask(135)/sigreturn(139)`，
-   包括 trap 返回前检查 pending 信号、改用户现场跳到处理函数、`sigsuspend`。
-   这是 ch7 的另一半，工作量约等于今天的管道；
-2. **`exec` 带 argv**（cmdline_args）；
-3. **stdin**：接 UART 输入（需要轮询或中断），之后 user_shell 才能跑；
-4. **共享内存**：rCore ch7 没有 shm；在我们的环境里对应 Jailhouse ivshmem
-   （之前讨论过，作为独立课题，和持久化一起做）；
-5. **内核堆**：换掉 bump 分配器（或把 `translated_byte_buffer` 改成栈上小数组），
-   彻底消除长跑泄漏。
+upstream 的 ch7 信号实现**不建用户栈上的信号帧、也没有 trampoline**：
+`call_user_signal_handler` 只是把 TrapContext 备份到 TCB，然后改 `sepc`（我们改 `ELR_EL1`）
+和 `a0`（我们改 `x0`），要求处理函数最后调 `sigreturn()`。AArch64 上照抄即可，
+但有几个坑：
+
+1. **备份/恢复的是整个 TrapContext**（272 字节，含 x0~x30、sp_el0、ELR、SPSR）。
+   `sys_sigreturn` 把它整份写回，并且**返回恢复后的 x0**——因为 `trap_handler`
+   在 syscall 返回后还会写一次 `cx.x[0] = ret`，不返回旧 x0 就会把返回值改坏。
+2. **两条返回路径都要处理**：同步异常（`sync_handler` → `trap_handler`）和
+   中断（`irq_handler` → `irq_dispatch`）。只处理前者的话，被 SIGKILL 的进程
+   要等到下一次系统调用才死。
+3. **用户处理函数是被 `eret` 直接跳进去的**（不是 `blr`），所以 `x30/lr` 是中断现场的
+   残留值，处理函数**不能 `ret`**，必须 `sigreturn()` 换回现场。
+4. `sigaction` 的用户结构体必须和内核 `SignalAction` 布局一致：
+   `#[repr(C, align(16))] { handler: usize, mask: u32 }`（16 字节）。
+5. `kill` 要按 pid 找进程 → 新增 `PID2TCB`（`BTreeMap`）；`add_task` 时插入，
+   进程退出时 `remove_from_pid2task`。
+
+---
+
+## 十、没做完的（ch7 剩余 / 下一步）
+
+1. **`exec` 带 argv**（cmdline_args）：把参数字符串和指针数组压到用户栈，
+   `_start` 取 `argc/argv`。工作量不大，但 user_shell 用得上；
+2. **stdin**：接 UART 输入。**当前环境不可验证**——mini-UART 的 RX 被 root cell
+   的 Linux 持有（ttyS0 上跑着 agetty），而且我们只能 ssh，没有物理串口可敲键；
+   要做得先解决输入通道（关 agetty + 共享内存转发，或接 USB-TTL）；
+3. **共享内存**：rCore ch7 没有 shm；在我们的环境里对应 Jailhouse ivshmem，
+   需要改 root cell 配置（独立课题，和持久化一起做）；
+4. **内核堆**：bump 分配器只增不减。ch8（线程）会大量创建/销毁线程，
+   必须在 ch8 之前换掉（或至少把高频路径改成页帧缓冲）；
+5. **用户态堆**：`pipe_large_test` 为了不用用户态堆改成了传 4 字节校验和；
+   以后要给 user crate 加 `#[global_allocator]`。
+
+> 计划：ch7 的管道 + 信号到此收尾；接下来开 `ch7+` 分支先还"堆分配器 + ivshmem"的技术债，
+> 再进 ch8（线程与同步）。

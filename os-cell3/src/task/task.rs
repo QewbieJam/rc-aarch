@@ -14,7 +14,9 @@
 //!   2) upstream 用 `KernelStack::new(&pid)` 映射固定 VA；我们用页帧池里的连续两页
 //!      （见 pid.rs）。
 
+use super::action::SignalActions;
 use super::pid::{KernelStack, PidHandle, pid_alloc};
+use super::signal::SignalFlags;
 use super::TaskContext;
 use crate::fs::{File, Stdout};
 use crate::mm::MemorySet;
@@ -57,6 +59,22 @@ pub struct TaskControlBlockInner {
     pub exit_code: i32,
     /// 打开的文件表（0=stdin 1=stdout 2=stderr，3 起是文件/管道）
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
+
+    // ---- ch7：信号 ----
+    /// 待处理信号
+    pub signals: SignalFlags,
+    /// 屏蔽字（这些信号先不处理）
+    pub signal_mask: SignalFlags,
+    /// 正在处理哪个信号（-1 = 没有）
+    pub handling_sig: isize,
+    /// 每个信号的处理动作
+    pub signal_actions: SignalActions,
+    /// 被 SIGKILL 杀掉
+    pub killed: bool,
+    /// 被 SIGSTOP 冻住
+    pub frozen: bool,
+    /// 进信号处理函数前备份的 TrapContext（sigreturn 时恢复）
+    pub trap_ctx_backup: Option<TrapContext>,
 }
 
 impl TaskControlBlockInner {
@@ -111,6 +129,13 @@ impl TaskControlBlock {
                     parent: None,
                     children: Vec::new(),
                     exit_code: 0,
+                    signals: SignalFlags::empty(),
+                    signal_mask: SignalFlags::empty(),
+                    handling_sig: -1,
+                    signal_actions: SignalActions::default(),
+                    killed: false,
+                    frozen: false,
+                    trap_ctx_backup: None,
                     fd_table: vec![
                         Some(Arc::new(crate::fs::Stdin)),
                         Some(Arc::new(Stdout)),
@@ -168,6 +193,14 @@ impl TaskControlBlock {
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
                     exit_code: 0,
+                    // ★ fork：待处理信号清空，但屏蔽字和处理动作继承
+                    signals: SignalFlags::empty(),
+                    signal_mask: parent_inner.signal_mask,
+                    handling_sig: -1,
+                    signal_actions: parent_inner.signal_actions.clone(),
+                    killed: false,
+                    frozen: false,
+                    trap_ctx_backup: None,
                     // ★ fork 继承父进程的文件描述符（共享同一个 OSInode，偏移也共享）
                     fd_table: parent_inner.fd_table.clone(),
                 })

@@ -9,8 +9,5 @@ use crate::exit;
 #[panic_handler]
 fn panic_handler(panic_info: &core::panic::PanicInfo) -> ! {
     crate::println!("[app] Panicked: {}", panic_info);
-    exit(127);
-    loop {
-        core::hint::spin_loop();
-    }
+    exit(127)
 }

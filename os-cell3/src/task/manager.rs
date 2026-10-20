@@ -11,7 +11,7 @@
 
 use super::TaskControlBlock;
 use crate::sync::UPSafeCell;
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 
 pub struct TaskManager {
@@ -34,9 +34,29 @@ impl TaskManager {
 
 static TASK_MANAGER: UPSafeCell<TaskManager> = unsafe { UPSafeCell::new(TaskManager::new()) };
 
-/// 把任务放进就绪队列
+/// pid → TCB（ch7：`kill(pid)` / 父子关系查找要用）
+static PID2TCB: UPSafeCell<BTreeMap<usize, Arc<TaskControlBlock>>> =
+    unsafe { UPSafeCell::new(BTreeMap::new()) };
+
+/// 把任务放进就绪队列（同时登记 pid）
 pub fn add_task(task: Arc<TaskControlBlock>) {
+    PID2TCB
+        .exclusive_access()
+        .insert(task.getpid(), Arc::clone(&task));
     TASK_MANAGER.exclusive_access().add(task);
+}
+
+/// 按 pid 找任务（ch7 的 `kill` 用）
+pub fn pid2task(pid: usize) -> Option<Arc<TaskControlBlock>> {
+    PID2TCB.exclusive_access().get(&pid).map(Arc::clone)
+}
+
+/// 进程退出/回收时把 pid 从表里摘掉
+pub fn remove_from_pid2task(pid: usize) {
+    let mut map = PID2TCB.exclusive_access();
+    if map.remove(&pid).is_none() {
+        panic!("pid2task 里找不到 pid {}", pid);
+    }
 }
 
 /// 从就绪队列取一个任务

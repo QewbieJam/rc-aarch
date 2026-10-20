@@ -13,6 +13,9 @@ mod context;
 
 pub use context::TrapContext;
 
+use crate::task::{
+    SignalFlags, check_signals_error_of_current, current_add_signal, handle_signals,
+};
 use core::arch::{asm, global_asm};
 
 global_asm!(include_str!("trap.S"));
@@ -137,14 +140,15 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
             }
             cx.x[0] = ret as usize;
         }
-        ec::DABT_LOW | ec::DABT_CUR => {
-            // 对应 rCore 的 StoreFault / StorePageFault → 退出码 -2
-            crate::println!("[trap]   -> Data Abort @ {:#x}（进程以 -2 退出）", far);
-            fault_from(far, spsr, -2);
-        }
-        ec::IABT_LOW | ec::IABT_CUR => {
-            crate::println!("[trap]   -> Instruction Abort @ {:#x}（进程以 -2 退出）", far);
-            fault_from(far, spsr, -2);
+        ec::DABT_LOW | ec::DABT_CUR | ec::IABT_LOW | ec::IABT_CUR => {
+            // ch7：缺页/访问异常 → 给进程挂 SIGSEGV（有 handler 就交给它，没有就退出）
+            if spsr & 0xf == 0 {
+                crate::println!("[trap] 用户态访问异常 @ {:#x} → SIGSEGV", far);
+                current_add_signal(SignalFlags::SIGSEGV);
+            } else {
+                crate::println!("[trap] 内核（EL1）访问异常 @ {:#x} → 停机", far);
+                shutdown_with(-1);
+            }
         }
         ec::UNKNOWN => {
             // 对应 rCore 的 IllegalInstruction。
@@ -160,14 +164,26 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
                 esr,
                 insn
             );
-            // ⚠️ 这里**不能**像 RISC-V 那样靠 `+= 4` 越过非法指令来"忽略"它，
-            //    因为我们要把进程杀掉（退出码 -3，对应 upstream 的 IllegalInstruction 分支）
-            fault_from(elr, spsr, -3);
+            // ch7：非法指令 → SIGILL（有 handler 就交给它，没有就退出）
+            if spsr & 0xf == 0 {
+                current_add_signal(SignalFlags::SIGILL);
+            } else {
+                shutdown_with(-1);
+            }
         }
         _ => {
             crate::println!("[trap]   -> 尚未处理，先停在这里");
             infinite_loop();
         }
+    }
+
+    // ch7：返回用户态之前处理信号
+    //   ① 有 handler 的信号 → 改 ELR 跳到 handler（handler 里要调 sigreturn）
+    //   ② 没有 handler 的错误信号（SIGSEGV/SIGILL/SIGKILL…）→ 结束进程
+    handle_signals();
+    if let Some((errno, msg)) = check_signals_error_of_current() {
+        crate::println!("[kernel] {}", msg);
+        crate::task::exit_current_and_run_next(errno);
     }
 }
 
@@ -198,26 +214,6 @@ pub fn self_test() {
         crate::println!("[trap] self test PASSED (0 个寄存器被写坏)");
     } else {
         crate::println!("[trap] self test FAILED: {} 个寄存器被写坏", bad);
-    }
-}
-
-/// 异常发生后的处理：来自 EL0 的异常 → 杀掉当前任务换下一个；
-/// 来自 EL1 的异常 → 是内核自己的 bug，停下来别装作没事
-///
-/// ★ ch3 的变化：upstream 的 trap_handler 在 ch3 里把 `run_next_app()` 改成了
-///   `exit_current_and_run_next()`，我们照做 —— ch2 的 `batch::run_next_app`
-///   从此不再参与调度（文件留着当对照）。
-fn fault_from(addr: usize, spsr: usize, exit_code: i32) -> ! {
-    if spsr & 0xf == 0 {
-        crate::println!(
-            "[trap] EL0 的进程异常于 {:#x} → 以退出码 {} 结束（父进程 waitpid 能看到）",
-            addr,
-            exit_code
-        );
-        crate::task::exit_current_and_run_next(exit_code);
-    } else {
-        crate::println!("[trap] 内核自己（EL1）异常于 {:#x} → 停机", addr);
-        shutdown_with(-1);
     }
 }
 
@@ -309,6 +305,13 @@ pub extern "C" fn irq_dispatch(_cx: &mut TrapContext) {
     // ch5：定时器只会在某个进程跑在 EL0 时到来，直接让出即可
     if irq == crate::gic::IRQ_TIMER {
         crate::task::suspend_current_and_run_next();
+    }
+
+    // ch7：中断返回用户态之前也要处理信号（否则被 SIGKILL 的进程要等下一次系统调用）
+    handle_signals();
+    if let Some((errno, msg)) = check_signals_error_of_current() {
+        crate::println!("[kernel] {}", msg);
+        crate::task::exit_current_and_run_next(errno);
     }
 }
 
