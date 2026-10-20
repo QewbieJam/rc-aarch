@@ -10,6 +10,15 @@ SECTIONS
     . =0xFA000000;
     /* . = 0x40080000; */
 
+    /* ---- ch4：内核地址空间要按段设置权限，先把各段边界导出来 ----
+     * 对应 rCore ch4 linker-qemu.ld 里的 stext/etext/srodata/... 符号。
+     * mm/memory_set.rs 的 new_kernel() 会用它们建恒等映射：
+     *   [__text_start, __rodata_start)  RX
+     *   [__rodata_start, __data_start)  RO
+     *   [__data_start, __kernel_end)    RW (XN)
+     */
+    __text_start = .;
+
     /* ---- 代码段 ---- */
     .text : {
         /* ★ 关键：入口必须排在所有代码最前面
@@ -32,21 +41,27 @@ SECTIONS
     .vectors : ALIGN(2048) {
         KEEP(*(.vectors))
     }
+    __text_end = .;
 
     /* ---- 只读数据（字符串常量等）---- */
     .rodata : ALIGN(4096) {
+        __rodata_start = .;
         *(.rodata .rodata.*)
+        __rodata_end = .;
     }
 
     /* ---- 已初始化数据 ---- */
     .data : ALIGN(4096) {
+        __data_start = .;
         *(.data .data.*)
+        __data_end = .;
     }
 
     /* ---- 未初始化数据 + 启动栈 ---- */
     .bss : ALIGN(4096) {
         *(.bss.stack)          /* 启动栈（对应 rCore 的 boot_stack） */
         __bss_start = .;       /* clear_bss() 的起点（对应 rCore 的 sbss） */
+        __sbss = .;            /* 同上；mm 模块用它（两个名字避免同一 crate 里重名） */
         *(.bss .bss.*)
         *(.sbss .sbss.*)
     }

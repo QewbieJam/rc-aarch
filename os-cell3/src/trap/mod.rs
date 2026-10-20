@@ -148,10 +148,17 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
         }
         ec::UNKNOWN => {
             // 对应 rCore 的 IllegalInstruction。
-            // ★ EL0 执行 hvc 就是这一类（hvc 在 EL0 是未定义指令）
+            // ★ EL0 执行 hvc 就是这一类（hvc 在 EL0 是未定义指令）。
+            // ch4 调试时还要能看出"到底是哪条指令"——把用户 ELR 处的指令字读出来，
+            // 因为最常见的原因是**代码页的 cache 没同步**，反汇编看着没问题、
+            // CPU 却报未定义（见 docs/04 的坑 2）。
+            let insn = crate::mm::read_user_u32(crate::task::current_user_token(), elr);
             crate::println!(
-                "[trap]   -> Unknown/Illegal instruction @ ELR={:#x} (ch2-D 里改成 kill app)",
-                elr
+                "[trap]   -> Unknown: task={} ELR={:#x} ESR={:#x} insn={:#x?}",
+                crate::task::current_task_id(),
+                elr,
+                esr,
+                insn
             );
             // ⚠️ 这里**不能**像 RISC-V 那样靠 `+= 4` 越过非法指令来"忽略"它，
             //    因为我们要把 app 杀掉换下一个（见 fault_from）
@@ -236,6 +243,7 @@ static mut TICKS: usize = 0;
 static mut TICKS_FROM_EL0: usize = 0;
 
 #[inline]
+#[allow(dead_code)]
 fn ticks_load(p: *const usize) -> usize {
     unsafe { core::ptr::read_volatile(p) }
 }
@@ -299,14 +307,17 @@ pub extern "C" fn irq_dispatch(_cx: &mut TrapContext) {
     }
 }
 
+#[allow(dead_code)]
 pub fn ticks() -> usize {
     ticks_load(addr_of!(TICKS))
 }
 
+#[allow(dead_code)]
 pub fn ticks_from_el0() -> usize {
     ticks_load(addr_of!(TICKS_FROM_EL0))
 }
 
+#[allow(dead_code)]
 pub fn read_daif_pub() -> usize {
     read_daif()
 }
@@ -348,6 +359,7 @@ pub fn ack_test() {
 /// `Kernel panic - not syncing: Asynchronous SError Interrupt` → 整板失联（只能断电）。
 ///
 /// 所以：关 CNTV、屏蔽 DAIF.I、关 PPI 27、把 Group 恢复成复位值。
+#[allow(dead_code)]
 pub fn cleanup_timer() {
     crate::timer::disable();
     unsafe {
@@ -381,6 +393,7 @@ pub fn timer_poll_test() {
 }
 
 /// ch3-A：打开定时器中断（GIC 初始化 + 编程 CNTV + 清 DAIF.I）
+#[allow(dead_code)]
 pub fn enable_timer() {
     crate::comm_region::dump(); // 先看看 hypervisor 给我们填了什么
     crate::timer::dump();

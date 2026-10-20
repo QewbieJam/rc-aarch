@@ -6,7 +6,7 @@
 //!   - `sys_yield` → `task::suspend_current_and_run_next()`（状态回 Ready，让出 CPU）
 //!   - `sys_get_time` → 毫秒时间（ch3 的 app 用它观察"时间片"）
 
-use crate::task::{exit_current_and_run_next, suspend_current_and_run_next};
+use crate::task::{change_program_brk, exit_current_and_run_next, suspend_current_and_run_next};
 use crate::timer::get_time_ms;
 
 /// 退出（对照 rCore 的 `pub fn sys_exit(exit_code: i32) -> !`）
@@ -26,4 +26,16 @@ pub fn sys_yield() -> isize {
 /// 当前时间（毫秒）（对照 rCore 的 `pub fn sys_get_time() -> isize`）
 pub fn sys_get_time() -> isize {
     get_time_ms() as isize
+}
+
+/// 改 program break（对照 rCore ch4 的 `pub fn sys_sbrk(size: i32) -> isize`）
+///
+/// 成功返回**旧的** brk，失败返回 -1。
+/// 语义和 Linux 的 brk/sbrk 一致：`sbrk(0)` 查当前 brk，`sbrk(n)` 扩/缩 n 字节。
+pub fn sys_sbrk(size: i32) -> isize {
+    if let Some(old_brk) = change_program_brk(size) {
+        old_brk as isize
+    } else {
+        -1
+    }
 }

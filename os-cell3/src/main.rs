@@ -31,16 +31,19 @@
 
 use core::arch::global_asm;
 
+// ★ ch4：页表/MapArea/任务表都要用 Vec、BTreeMap —— `alloc` 是 sysroot 自带的，
+//   不算外部依赖；只要提供一个 #[global_allocator]（见 mm/heap_allocator.rs）就能用。
+extern crate alloc;
+
 // ★ 顺序很重要：`#[macro_use]` 让 console.rs 里的 print!/println! 在**其后**的模块里可用
 #[macro_use]
 mod console;
-// ch2-C 的批处理：ch3 起不再参与调度，留着当对照（关闭死代码警告）
-#[allow(dead_code)]
-mod batch;
+// ch2-C 的批处理：ch3 起不再参与调度，留着当对照（但不参与编译）
 mod comm_region;
 mod config;
 mod gic;
 mod loader;
+mod mm;
 mod sync;
 mod syscall;
 mod task;
@@ -72,46 +75,28 @@ fn clear_bss() {
 pub extern "C" fn rust_main() -> ! {
     clear_bss();
 
-    // ① 装向量表：VBAR_EL1 ← __vector_table
+    // ① 先装向量表：VBAR_EL1 ← __vector_table
+    //   （放在开 MMU 之前：万一页表有洞，异常至少能落到我们自己的 handler 上）
     trap::init();
 
-    // ★ ch3-A 的定时器回归测试：true 时只验证"IRQ 能进 EL1 并能清理"，不跑任务。
-    //   曾经用一个"不 ack/不 EOI"的 minimal handler 调试，会活锁，见 docs/03。
-    const CH3_TIMER_TEST: bool = false;
-    if CH3_TIMER_TEST {
-        console::print_str("[rc-aarch] ch3-A: timer IRQ test（quiet 模式）\n");
-        trap::enable_timer();
-        println!("[timer] 中断已开，等 tick（最多 300ms）...");
-        let t0 = timer::get_time();
-        while trap::ticks() < 20 && timer::get_time().wrapping_sub(t0) < 54_000_000 * 3 / 10 {
-            core::hint::spin_loop();
-        }
-        println!(
-            "[timer] 结果：{} 次 tick（来自 EL0 的 {} 次）；DAIF={:#x}",
-            trap::ticks(),
-            trap::ticks_from_el0(),
-            trap::read_daif_pub()
-        );
-        trap::cleanup_timer();
-        println!("[timer] ch3-A 通过：IRQ 能投递到 EL1，且板子没挂");
-        loop {
-            core::hint::spin_loop();
-        }
-    }
+    // ② ch4：建内核地址空间并打开 stage-1 MMU（恒等映射，地址不变）
+    mm::init();
+    mm::remap_test();
 
-    // ② ch3 正式流程
-    println!("[rc-aarch] stage 3: task switch + 时间片轮转 on Jailhouse cell3");
+    // ③ ch4 正式流程：每个任务一套页表
+    println!("[rc-aarch] stage 4: 地址空间 + 分页（每任务一套页表）on Jailhouse cell3");
 
-    // ③ 把 app 从内核镜像拷到各自的运行地址（0xFA100000 + i*0x20000）
-    loader::load_apps();
-
-    // ④ 建任务表：每个任务一份内核栈 + 一份初始 TrapContext
+    // ④ 建任务表：从 ELF 建 MemorySet（用户段 + 用户栈），
+    //    在各自内核栈顶压初始 TrapContext
     task::init();
 
-    // ⑤ 配 GIC + CNTV；★ 内核态**不放行** IRQ（到 EL0 后由 SPSR 自动放行）
+    // ⑤ 任务建好后统一同步一次 I-cache（app 代码是刚写进页帧的）
+    mm::sync_icache_all();
+
+    // ⑥ 配 GIC + CNTV；★ 内核态**不放行** IRQ（到 EL0 后由 SPSR 自动放行）
     trap::init_timer_irq();
 
-    // ⑥ 换到任务 0，eret 到 EL0 —— 从这里开始就进入"用户态 + 时间片"了
+    // ⑦ 换到任务 0（会把 TTBR0 切到任务 0 的页表），eret 到 EL0
     task::run_first_task()
 }
 

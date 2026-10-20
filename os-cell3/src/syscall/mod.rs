@@ -24,6 +24,8 @@ pub const SYSCALL_EXIT: usize = 93;
 pub const SYSCALL_YIELD: usize = 124;
 /// 对照 rCore 的 `const SYSCALL_GET_TIME: usize = 169;`
 pub const SYSCALL_GET_TIME: usize = 169;
+/// ch4 新增：改 program break（Linux brk，214）
+pub const SYSCALL_SBRK: usize = 214;
 
 /// 分发（对照 rCore 的 `pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize`）
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
@@ -32,6 +34,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_EXIT => sys_exit(args[0] as i32),
         SYSCALL_YIELD => sys_yield(),
         SYSCALL_GET_TIME => sys_get_time(),
+        SYSCALL_SBRK => sys_sbrk(args[0] as i32),
         _ => {
             crate::println!("[syscall] 不支持的调用号: {}", syscall_id);
             -1

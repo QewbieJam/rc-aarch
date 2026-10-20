@@ -1,31 +1,26 @@
-//! 文件类系统调用（阶段 2 / ch2-B）
+//! 文件类系统调用（ch4）—— 对照 rCore ch4 的 `os/src/syscall/fs.rs`
 //!
-//! 对照 rCore ch2 的 `os/src/syscall/fs.rs`：只有一个 `sys_write`。
+//! ★ ch4 和 ch3 最大的区别：**用户指针不能直接解引用了**。
+//!   ch3 里内核和用户共用一套物理地址，`buf` 指针在内核里读就是用户的内存。
+//!   ch4 每个任务有自己的页表，用户 VA 在内核当前页表下未必有效 → 必须
+//!   先用**当前任务的页表**把 [buf, buf+len) 翻译成物理页，再从物理页读。
+//!   这就是 `mm::translated_byte_buffer` 干的事（对照 upstream 的同名函数）。
 
-/// 写（对照 rCore 的 `pub fn sys_write(fd: usize, buffer: *const u8, len: usize) -> isize`）
-///
-/// rCore 里输出最终走 SBI（`console_putchar`）；我们走
-/// `console::uart_putc`（`hvc` 进 hypervisor 虚拟控制台 + mini-UART 直写）。
-/// 这也是"内核态"的输出，用户程序只能通过这个 syscall 间接打印。
+use crate::mm::translated_byte_buffer;
+use crate::task::current_user_token;
+
+const FD_STDOUT: usize = 1;
+
+/// 写（对照 upstream 的 `sys_write`）
 pub fn sys_write(fd: usize, buffer: *const u8, len: usize) -> isize {
-    if fd != 1 {
-        // 只支持 stdout（fd=1），与 rCore ch2 的行为一致
+    if fd != FD_STDOUT {
         return -1;
     }
-    // 安全检查：调用者（用户程序）给的指针必须落在本 cell 的内存里，
-    // 否则内核会跟着一起崩。ch2 阶段只做最粗的检查：
-    //   必须落在 cell3 的可写 RAM 区（0xFA000000 ~ 0xFC000000）
-    let addr = buffer as usize;
-    const CELL_BASE: usize = 0xFA000000;
-    const CELL_END: usize = 0xFC000000;
-    if addr < CELL_BASE || addr.saturating_add(len) > CELL_END {
-        crate::println!("[sys_write] 非法缓冲区 {:#x}+{}", addr, len);
-        return -1;
-    }
-    let slice = unsafe { core::slice::from_raw_parts(buffer, len) };
-    // 不是 UTF-8 也没关系：按字节原样输出
-    for &b in slice {
-        crate::console::uart_putc(b);
+    let buffers = translated_byte_buffer(current_user_token(), buffer, len);
+    for buf in buffers {
+        for &b in buf.iter() {
+            crate::console::uart_putc(b);
+        }
     }
     len as isize
 }

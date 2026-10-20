@@ -13,6 +13,8 @@ const SYSCALL_EXIT: usize = 93;
 const SYSCALL_YIELD: usize = 124;
 /// ch3 新增：毫秒时间
 const SYSCALL_GET_TIME: usize = 169;
+/// ch4 新增：改 program break（Linux brk，214）
+const SYSCALL_SBRK: usize = 214;
 
 /// 发起一次系统调用（对照 rCore 的 `fn syscall(id: usize, args: [usize; 3]) -> isize`）
 fn syscall(id: usize, args: [usize; 3]) -> isize {
@@ -45,4 +47,9 @@ pub fn sys_yield() -> isize {
 /// 读毫秒时间（对照 rCore 的 `pub fn sys_get_time() -> isize`）
 pub fn sys_get_time() -> isize {
     syscall(SYSCALL_GET_TIME, [0, 0, 0])
+}
+
+/// 改 program break（对照 rCore ch4 的 `pub fn sys_sbrk(size: i32) -> isize`）
+pub fn sys_sbrk(size: i32) -> isize {
+    syscall(SYSCALL_SBRK, [size as usize, 0, 0])
 }

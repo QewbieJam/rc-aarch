@@ -69,3 +69,8 @@ pub fn yield_() -> isize {
 pub fn get_time() -> isize {
     sys_get_time()
 }
+
+/// ch4：改 program break（对应 rCore 的 `pub fn sbrk(size: i32) -> isize`）
+pub fn sbrk(size: i32) -> isize {
+    sys_sbrk(size)
+}

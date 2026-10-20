@@ -1,35 +1,29 @@
-/* rc-aarch 用户程序链接脚本（ch3）
- * 对照 rCore ch3 的 user/src/linker.ld（那边 BASE_ADDRESS = 0x80400000）
+/* rc-aarch 用户程序链接脚本（ch4）
+ * 对照 rCore ch4 的 user/src/linker.ld（那边 BASE_ADDRESS = 0x10000）
  *
- * ★★ ch3 的关键变化：**每个 app 要链接到各自的加载地址**
- *   ch2 的批处理一次只跑一个 app，所有 app 都装在同一个地址，所以"都链接到 0xFA100000"
- *   没毛病。ch3 的多个任务要**同时**驻留在内存里：
- *        app_i 的加载地址 = 0xFA100000 + i * 0x20000
- *   如果还是全部按 0xFA100000 链接，app_1 里那些**绝对地址**（链接器符号
- *   start_bss/end_bss、.data 里的指针…）就会指向 app_0 的地盘 —— 表现为
- *   app_1 清 bss 时清掉 app_0 的数据，最后莫名其妙跑到 0x0。
- *   （upstream 的 user/build.py 就是每个 app 改一次 linker.ld 再单独 cargo build。）
+ * ★★ ch4 的关键变化：**所有 app 都链接到同一个用户虚拟地址 0x10000**
  *
- *   我们的做法更省事：链接脚本里 BASE_ADDRESS 允许被命令行覆盖
- *   （build.rs 传 `--defsym=__app_base=...`），一个脚本搞定所有 app。
+ *   ch3：多个任务同时驻留、共用一套物理地址，只好让 app_i 链到
+ *        0xFA100000 + i*0x20000（否则绝对地址会互相踩）。
+ *   ch4：每个任务有**自己的页表**，同一个 VA 在不同任务里映射到不同物理页，
+ *        所以所有 app 都可以链接到 0x10000 —— 这也和 upstream ch4 一致。
  *
- * 我们的 app 基址 = 0xFA100000：
- *   cell3 的 cell 配置里 [1] RAM 区 = 0xfa100000 + 0x1f00000（31MB）
- *   内核 batch::load_app() 会把 app 的裸二进制拷到这里，然后 eret 到 EL0 跑
+ *   为什么从 0x10000 开始而不是 0x0：
+ *     - 低地址（0x0 附近）留给以后做空指针检测/内核共享页；
+ *     - upstream ch4 也从 0x10000 起，保持一致方便对照。
  *
- * ⚠️ 和内核 ch1 踩过的同一个坑：入口必须排最前，且 .eh_frame_hdr/.note 要 DISCARD 掉。
+ *   ⚠️ 入口必须排最前，.eh_frame_hdr/.note 要 DISCARD 掉（ch1 的教训）。
  */
 ENTRY(_start)
 
-/* 默认 0xFA100000；build.rs 会用 --defsym=__app_base=0x... 覆盖成每个 app 自己的地址 */
-BASE_ADDRESS = DEFINED(__app_base) ? __app_base : 0xFA100000;
+BASE_ADDRESS = 0x10000;
 
 SECTIONS
 {
     . = BASE_ADDRESS;
 
     .text : {
-        KEEP(*(.text.entry))       /* _start 必须在这，= 0xFA100000 */
+        KEEP(*(.text.entry))       /* _start 必须在这，= 0x10000 */
         *(.text .text.*)
     }
     .rodata : ALIGN(4096) {

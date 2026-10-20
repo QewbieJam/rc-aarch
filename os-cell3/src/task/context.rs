@@ -41,12 +41,13 @@ impl TaskContext {
         }
     }
 
-    /// 构造"第一次被调度"的上下文（对照 rCore 的 `goto_restore(kstack_ptr)`）
+    /// 构造"第一次被调度"的上下文
+    /// （ch3 里叫 `goto_restore`，ch4 起 upstream 改名 `goto_trap_return`，我们跟上）
     ///
     /// 语义：`__switch` 把 sp 换成 `kstack_ptr`、`ret` 跳到 `__restore_sp`，
     /// 而 `__restore_sp` 恰好把"当前的 sp"当成 TrapContext 恢复现场并 `eret` 到 EL0。
     /// 于是任务就从 `app_init_context` 里写好的入口/栈开始跑起来了。
-    pub fn goto_restore(kstack_ptr: usize) -> Self {
+    pub fn goto_trap_return(kstack_ptr: usize) -> Self {
         unsafe extern "C" {
             /// trap.S 里定义：`RESTORE_REGS; eret`
             safe fn __restore_sp();

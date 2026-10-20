@@ -3,7 +3,12 @@ target = "aarch64-unknown-none"
 
 [target.aarch64-unknown-none]
 rustflags = [
-    # app 的链接基址 = 0xFA100000（cell3 的 [1] RAM 区），见 src/linker.ld
+    # app 的链接基址 = 0x10000（ch4 起每个任务一套页表，不再需要各链各的地址），见 src/linker.ld
     "-Clink-arg=-Tsrc/linker.ld",
     "-Cforce-frame-pointers=yes",
+    # ★ ch4：把段对齐从默认的 64KB 降到 4KB。
+    #   默认 max-page-size=64KB 时，第一个 PT_LOAD 在 0x10000，文件里就要垫 64KB 的洞，
+    #   每个 app 的 ELF 都白白胖到 ~79KB（4 个 app 就是 300 多 KB 的内核 .data）。
+    #   4KB 对齐后 ELF ≈ 12KB，p_offset/p_vaddr 仍然页对齐，加载器照常工作。
+    "-Clink-arg=-zmax-page-size=4096",
 ]
