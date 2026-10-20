@@ -285,9 +285,9 @@ pub fn translated_str(token: usize, ptr: *const u8) -> alloc::string::String {
     string
 }
 
-/// 把用户指针指向的 i32 变成内核可写引用（ch5：`waitpid` 写回 exit_code）
+/// 把用户指针指向的 T 变成内核可写引用（ch5 的 exit_code、ch7 的 pipe fd 数组）
 /// —— 对照 upstream 的 `translated_refmut`
-pub fn translated_refmut(token: usize, ptr: *mut i32) -> &'static mut i32 {
+pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;
     let vpn = VirtAddr::from(va).floor();
@@ -295,7 +295,58 @@ pub fn translated_refmut(token: usize, ptr: *mut i32) -> &'static mut i32 {
         .translate(vpn)
         .unwrap_or_else(|| panic!("用户地址 {:#x} 没有映射", va));
     assert!(pte.is_user(), "用户地址 {:#x} 指向内核页", va);
-    unsafe { &mut *(pte.ppn().get_bytes_array().as_mut_ptr().add(va & 0xfff) as *mut i32) }
+    unsafe { &mut *(pte.ppn().get_bytes_array().as_mut_ptr().add(va & 0xfff) as *mut T) }
+}
+
+/// 用户缓冲区（ch7）：跨页的一段用户内存被切成若干切片
+/// —— 对照 upstream 的 `UserBuffer`
+pub struct UserBuffer {
+    pub buffers: Vec<&'static mut [u8]>,
+}
+
+impl UserBuffer {
+    pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
+        Self { buffers }
+    }
+    pub fn len(&self) -> usize {
+        self.buffers.iter().map(|b| b.len()).sum()
+    }
+}
+
+impl IntoIterator for UserBuffer {
+    type Item = *mut u8;
+    type IntoIter = UserBufferIterator;
+    fn into_iter(self) -> Self::IntoIter {
+        UserBufferIterator {
+            buffers: self.buffers,
+            current_buffer: 0,
+            current_idx: 0,
+        }
+    }
+}
+
+pub struct UserBufferIterator {
+    buffers: Vec<&'static mut [u8]>,
+    current_buffer: usize,
+    current_idx: usize,
+}
+
+impl Iterator for UserBufferIterator {
+    type Item = *mut u8;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_buffer >= self.buffers.len() {
+            None
+        } else {
+            let r = &mut self.buffers[self.current_buffer][self.current_idx] as *mut _;
+            if self.current_idx + 1 == self.buffers[self.current_buffer].len() {
+                self.current_idx = 0;
+                self.current_buffer += 1;
+            } else {
+                self.current_idx += 1;
+            }
+            Some(r)
+        }
+    }
 }
 
 /// 把用户指针指向的一段内存翻译成内核能读写的切片（对照 upstream 的同名函数）

@@ -23,6 +23,9 @@ pub const SYSCALL_WRITE: usize = 64;
 /// ch6：开/关文件（Linux open/close）
 pub const SYSCALL_OPEN: usize = 56;
 pub const SYSCALL_CLOSE: usize = 57;
+/// ch7：dup + pipe
+pub const SYSCALL_DUP: usize = 24;
+pub const SYSCALL_PIPE: usize = 59;
 /// 对照 rCore 的 `const SYSCALL_EXIT: usize = 93;`
 pub const SYSCALL_EXIT: usize = 93;
 /// 对照 rCore 的 `const SYSCALL_YIELD: usize = 124;`（Linux sched_yield）
@@ -42,8 +45,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]),
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
+        SYSCALL_DUP => sys_dup(args[0]),
         SYSCALL_OPEN => sys_open(args[0] as *const u8, args[1] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),
+        SYSCALL_PIPE => sys_pipe(args[0] as *mut usize),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
         SYSCALL_YIELD => sys_yield(),
         SYSCALL_GET_TIME => sys_get_time(),

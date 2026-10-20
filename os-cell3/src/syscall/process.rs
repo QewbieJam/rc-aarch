@@ -65,17 +65,22 @@ pub fn sys_fork() -> isize {
 pub fn sys_exec(path: *const u8) -> isize {
     let token = current_user_token();
     let path = translated_str(token, path);
-    // ch6：exec 从**文件系统**里读 ELF（不再是内嵌的 `_app_names` 表）
-    match crate::fs::read_file_by_name(path.as_str()) {
-        Some(data) => {
-            current_task().unwrap().exec(&data);
-            0
-        }
-        None => {
+    // ch7：ELF 读进**页帧缓冲**（不用 Vec —— 内核 bump 堆不回收，Vec 扩容会泄漏）
+    let size = match crate::fs::file_size(path.as_str()) {
+        Some(s) if s > 0 => s,
+        _ => {
             crate::println!("[kernel] exec: 文件系统里没有 \"{}\"", path);
-            -1
+            return -1;
         }
+    };
+    let mut buf = crate::mm::FrameBuf::alloc(size);
+    let n = crate::fs::read_file_to(path.as_str(), &mut buf.as_mut_slice()[..size]).unwrap_or(0);
+    if n != size {
+        crate::println!("[kernel] exec: \"{}\" 只读到 {}/{} 字节", path, n, size);
+        return -1;
     }
+    current_task().unwrap().exec(&buf.as_slice()[..size]);
+    0
 }
 
 /// 等待子进程（对照 upstream 的 `sys_waitpid`）

@@ -164,6 +164,11 @@ impl Inode {
         })
     }
 
+    /// 文件大小（ch7：exec 要按文件大小精确分配缓冲）
+    pub fn size(&self) -> u32 {
+        self.read_disk_inode(|disk_inode| disk_inode.size)
+    }
+
     /// 从 offset 读
     pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
         let _fs = self.fs.lock();

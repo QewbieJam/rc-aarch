@@ -72,6 +72,16 @@ pub fn close(fd: usize) -> isize {
     sys_close(fd)
 }
 
+/// 复制 fd（ch7）
+pub fn dup(fd: usize) -> isize {
+    sys_dup(fd)
+}
+
+/// 创建管道：`pipe_fd[0]` 读端，`pipe_fd[1]` 写端（ch7）
+pub fn pipe(pipe_fd: &mut [usize]) -> isize {
+    sys_pipe(pipe_fd)
+}
+
 /// 对应 rCore 的 `pub fn write(fd: usize, buf: &[u8]) -> isize`
 pub fn write(fd: usize, buf: &[u8]) -> isize {
     sys_write(fd, buf)

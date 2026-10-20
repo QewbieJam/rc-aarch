@@ -16,7 +16,7 @@
 
 use super::pid::{KernelStack, PidHandle, pid_alloc};
 use super::TaskContext;
-use crate::fs::OSInode;
+use crate::fs::{File, Stdout};
 use crate::mm::MemorySet;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
@@ -55,8 +55,8 @@ pub struct TaskControlBlockInner {
     pub children: Vec<Arc<TaskControlBlock>>,
     /// 退出码（Zombie 才有意义）
     pub exit_code: i32,
-    /// 打开的文件表（0=stdin 1=stdout 2=stderr 保留，从 3 开始是真实文件）
-    pub fd_table: Vec<Option<Arc<OSInode>>>,
+    /// 打开的文件表（0=stdin 1=stdout 2=stderr，3 起是文件/管道）
+    pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
 }
 
 impl TaskControlBlockInner {
@@ -111,7 +111,11 @@ impl TaskControlBlock {
                     parent: None,
                     children: Vec::new(),
                     exit_code: 0,
-                    fd_table: vec![None, None, None],
+                    fd_table: vec![
+                        Some(Arc::new(crate::fs::Stdin)),
+                        Some(Arc::new(Stdout)),
+                        Some(Arc::new(Stdout)),
+                    ],
                 })
             },
         }

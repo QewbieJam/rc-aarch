@@ -22,11 +22,12 @@ mod page_table;
 
 pub use address::{PhysAddr, PhysPageNum, StepByOne, VPNRange, VirtAddr, VirtPageNum};
 pub use frame_allocator::{
-    FrameTracker, frame_alloc, frame_alloc_contig, frame_dealloc_range, frame_stats,
+    FrameBuf, FrameTracker, frame_alloc, frame_alloc_contig, frame_dealloc_range, frame_stats,
 };
 pub use memory_set::{MemorySet, kernel_token, remap_test};
 pub use page_table::{
-    PTEFlags, PageTable, PageTableEntry, translated_byte_buffer, translated_refmut, translated_str,
+    PTEFlags, PageTable, PageTableEntry, UserBuffer, translated_byte_buffer, translated_refmut,
+    translated_str,
 };
 
 /// 初始化堆 → 页帧分配器 → 内核地址空间 → 打开 MMU

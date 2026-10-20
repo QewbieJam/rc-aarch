@@ -171,6 +171,43 @@ pub fn frame_dealloc_range(start: PhysPageNum, n: usize) {
     }
 }
 
+/// 一段由页帧拼成的缓冲区（ch7：读 ELF 用）
+///
+/// 为什么不用 `Vec<u8>`：内核堆是 bump 分配器、不回收，`Vec` 扩容时旧缓冲会永久泄漏。
+/// 页帧缓冲走 frame allocator，Drop 时整段还回去，长度还精确（不会翻倍扩容）。
+pub struct FrameBuf {
+    start: PhysPageNum,
+    pages: usize,
+}
+
+impl FrameBuf {
+    /// 申请能放下 `bytes` 字节的连续页帧并清零
+    pub fn alloc(bytes: usize) -> Self {
+        let pages = (bytes + crate::config::PAGE_SIZE - 1) / crate::config::PAGE_SIZE;
+        let start = frame_alloc_contig(pages).expect("FrameBuf：页帧不够");
+        unsafe {
+            core::ptr::write_bytes(PhysAddr::from(start).0 as *mut u8, 0, pages * 4096);
+        }
+        Self { start, pages }
+    }
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe {
+            core::slice::from_raw_parts(PhysAddr::from(self.start).0 as *const u8, self.pages * 4096)
+        }
+    }
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe {
+            core::slice::from_raw_parts_mut(PhysAddr::from(self.start).0 as *mut u8, self.pages * 4096)
+        }
+    }
+}
+
+impl Drop for FrameBuf {
+    fn drop(&mut self) {
+        frame_dealloc_range(self.start, self.pages);
+    }
+}
+
 /// 页帧分配器自测（对照 upstream 的 `frame_allocator_test`）
 #[allow(unused)]
 pub fn frame_allocator_test() {

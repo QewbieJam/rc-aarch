@@ -1,31 +1,17 @@
-//! 文件类系统调用（ch6）—— 对照 rCore ch6 的 `os/src/syscall/fs.rs`
+//! 文件/管道类系统调用（ch6/ch7）—— 对照 rCore ch7 的 `os/src/syscall/fs.rs`
 //!
-//! ch6 新增：`open(56)` / `close(57)` / `read(63)`；`write(64)` 不再是"只写串口"，
-//! 而是按 fd 分发：
-//!   fd 1（stdout）→ 直接打印
-//!   fd ≥ 3        → 找当前进程 fd_table 里的 OSInode，读写文件
-//!   fd 0（stdin） → 还没接串口输入，返回 -1（ch7 再说）
+//! ch7 的变化：
+//!   - fd 背后不一定是文件了（可能是管道、标准输入输出），所以统一走 `File` trait；
+//!   - 新增 `pipe(59)` 和 `dup(24)`；
+//!   - 读写用 `UserBuffer`（跨页缓冲区）传给 File 实现。
 
-use crate::fs::{OpenFlags, open_file};
-use crate::mm::{translated_byte_buffer, translated_str};
+use crate::fs::{OpenFlags, make_pipe, open_file};
+use crate::mm::{UserBuffer, translated_byte_buffer, translated_refmut, translated_str};
 use crate::task::{current_task, current_user_token};
-use alloc::vec::Vec;
-
-const FD_STDIN: usize = 0;
-const FD_STDOUT: usize = 1;
+use alloc::sync::Arc;
 
 /// 写（对照 upstream 的 `sys_write`）
 pub fn sys_write(fd: usize, buffer: *const u8, len: usize) -> isize {
-    // stdout：不进 fd_table，直接打印
-    if fd == FD_STDOUT {
-        let token = current_user_token();
-        for buf in translated_byte_buffer(token, buffer, len) {
-            for &b in buf.iter() {
-                crate::console::uart_putc(b);
-            }
-        }
-        return len as isize;
-    }
     let token = current_user_token();
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
@@ -39,18 +25,12 @@ pub fn sys_write(fd: usize, buffer: *const u8, len: usize) -> isize {
     if !file.writable() {
         return -1;
     }
-    drop(inner); // 避免和文件操作里可能的借用冲突
-    let bufs = translated_byte_buffer(token, buffer, len);
-    let refs: Vec<&[u8]> = bufs.iter().map(|b| &**b).collect();
-    file.write(&refs) as isize
+    drop(inner); // 避免和文件操作里的借用冲突
+    file.write(UserBuffer::new(translated_byte_buffer(token, buffer, len))) as isize
 }
 
 /// 读（对照 upstream 的 `sys_read`）
 pub fn sys_read(fd: usize, buffer: *const u8, len: usize) -> isize {
-    if fd == FD_STDIN {
-        // TODO(ch7)：接 UART 输入
-        return -1;
-    }
     let token = current_user_token();
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
@@ -65,8 +45,7 @@ pub fn sys_read(fd: usize, buffer: *const u8, len: usize) -> isize {
         return -1;
     }
     drop(inner);
-    let mut bufs = translated_byte_buffer(token, buffer, len);
-    file.read(&mut bufs) as isize
+    file.read(UserBuffer::new(translated_byte_buffer(token, buffer, len))) as isize
 }
 
 /// 打开（对照 upstream 的 `sys_open`）
@@ -96,4 +75,37 @@ pub fn sys_close(fd: usize) -> isize {
     }
     inner.fd_table[fd].take();
     0
+}
+
+/// 创建管道（对照 upstream 的 `sys_pipe`）
+///
+/// 往用户给的 `usize[2]` 里写 (读端 fd, 写端 fd)。
+pub fn sys_pipe(pipe: *mut usize) -> isize {
+    let task = current_task().unwrap();
+    let token = current_user_token();
+    let mut inner = task.inner_exclusive_access();
+    let (read_end, write_end) = make_pipe();
+    let read_fd = inner.alloc_fd();
+    inner.fd_table[read_fd] = Some(read_end);
+    let write_fd = inner.alloc_fd();
+    inner.fd_table[write_fd] = Some(write_end);
+    *translated_refmut(token, pipe) = read_fd;
+    *translated_refmut(token, unsafe { pipe.add(1) }) = write_fd;
+    0
+}
+
+/// 复制 fd（对照 upstream 的 `sys_dup`）
+pub fn sys_dup(fd: usize) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    let file = match &inner.fd_table[fd] {
+        Some(f) => Arc::clone(f),
+        None => return -1,
+    };
+    let new_fd = inner.alloc_fd();
+    inner.fd_table[new_fd] = Some(file);
+    new_fd as isize
 }

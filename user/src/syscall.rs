@@ -11,8 +11,10 @@ use core::arch::asm;
 
 const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
+const SYSCALL_DUP: usize = 24;
 const SYSCALL_OPEN: usize = 56;
 const SYSCALL_CLOSE: usize = 57;
+const SYSCALL_PIPE: usize = 59;
 const SYSCALL_EXIT: usize = 93;
 const SYSCALL_YIELD: usize = 124;
 const SYSCALL_GET_TIME: usize = 169;
@@ -50,6 +52,15 @@ pub fn sys_open(path: &str, flags: u32) -> isize {
 
 pub fn sys_close(fd: usize) -> isize {
     syscall(SYSCALL_CLOSE, [fd, 0, 0])
+}
+
+pub fn sys_dup(fd: usize) -> isize {
+    syscall(SYSCALL_DUP, [fd, 0, 0])
+}
+
+/// 创建管道：往 pipe_fd[0]/[1] 里写读/写端 fd
+pub fn sys_pipe(pipe_fd: &mut [usize]) -> isize {
+    syscall(SYSCALL_PIPE, [pipe_fd.as_mut_ptr() as usize, 0, 0])
 }
 
 pub fn sys_write(fd: usize, buffer: &[u8]) -> isize {
