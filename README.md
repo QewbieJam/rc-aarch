@@ -1,8 +1,11 @@
-# rc-aarch — 用 AArch64 重写 rCore ch1/ch2
+# rc-aarch — 用 AArch64 重写 rCore ch1~ch5
 
-> **一句话：rCore 是"教材"，Jailhouse/MCS 是"战场"——把 ch1/ch2 学的东西用 AArch64 重写一遍，你就同时拿到了 Rust 系统编程能力和 MCS 项目的真实产出。**
+> **一句话：rCore 是"教材"，Jailhouse/MCS 是"战场"——把 rCore 各章用 AArch64 重写一遍，你就同时拿到了 Rust 系统编程能力和 MCS 项目的真实产出。**
 >
-> 创建：2026-09-18 ｜ 状态：**阶段 1 进行中**
+> 创建：2026-09-18 ｜ 状态：**ch1 ~ ch5 全部在树莓派 4B / openEuler MCS / Jailhouse cell3 上跑通**
+>
+> 进度：ch1 裸机 hello ｜ ch2 陷入+系统调用+批处理 ｜ ch3 任务切换+时间片 ｜
+> ch4 地址空间+分页 ｜ ch5 进程（fork/exec/waitpid）
 
 ---
 
@@ -47,7 +50,10 @@ rc-aarch/
 ├── README.md                    ← 本文件（项目章程）
 ├── docs/
 │   ├── 01-阶段1-对照rCore.md     ← ch1：裸机 hello（entry / linker / UART / bss）
-│   └── 02-阶段2-对照rCore.md     ← ch2：陷入/异常 + 系统调用 + 批处理
+│   ├── 02-阶段2-对照rCore.md     ← ch2：陷入/异常 + 系统调用 + 批处理
+│   ├── 03-阶段3-对照rCore.md     ← ch3：任务切换 + 时间片轮转（GICv2 / CNTV）
+│   ├── 04-阶段4-对照rCore.md     ← ch4：地址空间 + 分页（stage-1 MMU / 每进程页表）
+│   └── 05-阶段5-对照rCore.md     ← ch5：进程（fork / exec / waitpid）
 ├── os-qemu/                     ← QEMU 版内核工程（基址 0x40080000，PL011 UART）
 │   ├── Cargo.toml  .cargo/  linker.ld  Makefile
 │   └── src/{boot.S, main.rs}
@@ -61,7 +67,7 @@ rc-aarch/
 │       ├── syscall/{mod,fs,process}.rs       ← sys_write / sys_exit
 │       ├── sync.rs  batch.rs    ← UPSafeCell / 批处理
 │       └── link_app.S           ← build.rs 生成（内嵌 app，已 gitignore）
-├── user/                        ← aarch64 用户程序 crate（app 跑在 EL0，基址 0xFA100000）
+├── user/                        ← aarch64 用户程序 crate（app 跑在 EL0，基址 0x10000，每进程一套页表）
 │   ├── Cargo.toml  .cargo/  src/linker.ld  src/{lib,syscall,console,lang_items}.rs
 │   └── src/bin/*.rs             ← 每个文件一个 app
 ├── cells/                       ← Jailhouse cell 配置

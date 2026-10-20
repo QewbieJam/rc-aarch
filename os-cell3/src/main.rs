@@ -1,4 +1,4 @@
-//! rc-aarch 阶段 3：任务切换 + 时间片轮转（ch3）
+//! rc-aarch 阶段 5：进程（fork/exec/waitpid）—— ch5
 //!
 //! 对照 rCore-Tutorial-v3 ch3 的 `os/src/main.rs`：
 //!   rCore:  clear_bss → logging/device_tree → trap::init() → loader::load_apps()
@@ -83,21 +83,20 @@ pub extern "C" fn rust_main() -> ! {
     mm::init();
     mm::remap_test();
 
-    // ③ ch4 正式流程：每个任务一套页表
-    println!("[rc-aarch] stage 4: 地址空间 + 分页（每任务一套页表）on Jailhouse cell3");
+    // ③ ch5 正式流程：进程（fork/exec/waitpid）+ 就绪队列调度
+    println!("[rc-aarch] stage 5: 进程（fork/exec/waitpid）on Jailhouse cell3");
 
-    // ④ 建任务表：从 ELF 建 MemorySet（用户段 + 用户栈），
-    //    在各自内核栈顶压初始 TrapContext
-    task::init();
+    // ④ 列出所有内嵌的 app（exec 只能跳到这些名字）
+    loader::list_apps();
 
-    // ⑤ 任务建好后统一同步一次 I-cache（app 代码是刚写进页帧的）
-    mm::sync_icache_all();
+    // ⑤ 创建 pid=1 的 initproc，放进就绪队列
+    task::add_initproc();
 
     // ⑥ 配 GIC + CNTV；★ 内核态**不放行** IRQ（到 EL0 后由 SPSR 自动放行）
     trap::init_timer_irq();
 
-    // ⑦ 换到任务 0（会把 TTBR0 切到任务 0 的页表），eret 到 EL0
-    task::run_first_task()
+    // ⑦ 进入调度主循环：fetch 任务 → __switch 过去；任务切回来就继续 fetch
+    task::run_tasks()
 }
 
 /// panic 兜底（对应 rCore 的 lang_items.rs）

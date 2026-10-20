@@ -20,8 +20,6 @@ pub const PAGE_SIZE_BITS: usize = 12;
 pub const USER_STACK_SIZE: usize = 4096 * 2;
 /// 每个 app 的内核栈：trap 现场 + 内核调用链都在这上面（upstream 是 8KB）
 pub const KERNEL_STACK_SIZE: usize = 4096 * 2;
-/// 最多几个 app（upstream 是 4，我们定 16；受 .bss 大小和 cell RAM 区限制）
-pub const MAX_APP_NUM: usize = 16;
 /// 物理内存的上界 = cell 的 RAM 区末尾（0xFA100000 + 31MB）。
 /// 页帧分配器只发 [ekernel, MEMORY_END) 之间的页。
 pub const MEMORY_END: usize = 0xFC000000;

@@ -277,6 +277,52 @@ impl MemorySet {
         self.page_table.translate(vpn)
     }
 
+    /// 从另一个用户地址空间**深拷贝**一份（ch5 的 `fork`）
+    ///
+    /// 对照 upstream 的 `MemorySet::from_existed_user`：
+    /// 每个用户页都重新分配物理页，把内容逐字节复制过去（不是写时复制，简单直接）。
+    pub fn from_existed_user(user_space: &MemorySet) -> Self {
+        let mut memory_set = Self::new_bare();
+        for area in user_space.areas.iter() {
+            let mut new_area = MapArea::new(
+                area.vpn_range.get_start().into(),
+                area.vpn_range.get_end().into(),
+                area.map_type,
+                area.map_perm,
+            );
+            new_area.map(&mut memory_set.page_table);
+            for vpn in area.vpn_range {
+                if let Some(src) = area.data_frames.get(&vpn) {
+                    let dst_ppn = memory_set.page_table.translate(vpn).unwrap().ppn();
+                    let src_bytes = src.ppn.get_bytes_array();
+                    let dst_bytes = dst_ppn.get_bytes_array();
+                    dst_bytes.copy_from_slice(src_bytes);
+                    // 子进程会执行这些页里的代码 → 逐行清 D-cache（ch4 的坑 2）
+                    crate::mm::clean_dcache_range_to_pou(PhysAddr::from(dst_ppn).0, PAGE_SIZE);
+                }
+            }
+            memory_set.areas.push(new_area);
+        }
+        // 内核映射同样要挂进来
+        {
+            let kernel = KERNEL_SPACE.exclusive_access();
+            let kernel_pt = &kernel
+                .as_ref()
+                .expect("内核地址空间还没初始化")
+                .page_table;
+            memory_set
+                .page_table
+                .share_l1_entry(kernel_pt, crate::mm::KERNEL_L1_INDEX);
+        }
+        memory_set
+    }
+
+    /// 进程退出时把用户页帧还回去（页表项先留着，反正这个地址空间不再用）
+    /// —— 对照 upstream 的 `recycle_data_pages`
+    pub fn recycle_data_pages(&mut self) {
+        self.areas.iter_mut().for_each(|area| area.data_frames.clear());
+    }
+
     /// sbrk 收缩（对照 upstream 的 `shrink_to`）
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {

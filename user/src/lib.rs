@@ -55,8 +55,8 @@ pub fn write(fd: usize, buf: &[u8]) -> isize {
     sys_write(fd, buf)
 }
 
-/// 对应 rCore 的 `pub fn exit(exit_code: i32) -> isize`
-pub fn exit(exit_code: i32) -> isize {
+/// 退出（对应 rCore 的 `pub fn exit(exit_code: i32) -> !`）
+pub fn exit(exit_code: i32) -> ! {
     sys_exit(exit_code)
 }
 
@@ -73,4 +73,47 @@ pub fn get_time() -> isize {
 /// ch4：改 program break（对应 rCore 的 `pub fn sbrk(size: i32) -> isize`）
 pub fn sbrk(size: i32) -> isize {
     sys_sbrk(size)
+}
+
+// ---------------------------------------------------------------------------
+// ch5：进程相关
+// ---------------------------------------------------------------------------
+
+/// 取当前进程 pid
+pub fn getpid() -> isize {
+    sys_getpid()
+}
+
+/// fork：父进程返回子进程 pid，子进程返回 0
+pub fn fork() -> isize {
+    sys_fork()
+}
+
+/// exec：把当前进程换成另一个 app。`path` 必须带 '\0' 结尾（如 "forktest\0"）
+pub fn exec(path: &str) -> isize {
+    sys_exec(path)
+}
+
+/// 等任意子进程（对应 rCore 的 `pub fn wait(exit_code: &mut i32) -> isize`）
+pub fn wait(exit_code: &mut i32) -> isize {
+    loop {
+        match sys_waitpid(-1, exit_code as *mut _) {
+            -2 => {
+                yield_(); // 有子进程但还活着 → 让出 CPU 再试
+            }
+            pid => return pid, // -1（没子进程）或真实 pid
+        }
+    }
+}
+
+/// 等指定子进程
+pub fn waitpid(pid: usize, exit_code: &mut i32) -> isize {
+    loop {
+        match sys_waitpid(pid as isize, exit_code as *mut _) {
+            -2 => {
+                yield_();
+            }
+            pid => return pid,
+        }
+    }
 }

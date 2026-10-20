@@ -1,62 +1,13 @@
-//! 用户程序加载（ch4）—— 对照 rCore ch4 的 `os/src/loader.rs`
+//! 用户程序加载（ch5）—— 对照 rCore ch5 的 `os/src/loader.rs`
 //!
-//! ch4 的 loader 比 ch3 **简单得多**（upstream 也是这样）：
-//!   ch3 要自己把裸二进制拷到固定地址、自己管用户栈、自己压初始 TrapContext；
-//!   ch4 这些全部交给 `MemorySet::from_elf` + 页帧分配器，loader 只剩两件事：
-//!     ① 从 `link_app.S` 的 `_num_app` 表里读"第 i 个 app 的 ELF 在哪"；
-//!     ② 给每个任务提供一块**内核栈**（`.bss` 里的静态数组，恒等映射，天然可访问）。
+//! ch5 的 loader 只剩两件事：
+//!   ① 从 `link_app.S` 的 `_num_app` 表读"第 i 个 app 的 ELF 在哪"；
+//!   ② 从 `_app_names` 表**按名字**找 app —— `sys_exec(path)` 需要它。
 //!
-//! 内核栈为什么还留在静态数组里？
-//!   rCore ch4 把内核栈也放进"内核地址空间"（`kernel_stack_position` + 高地址映射），
-//!   因为 RISC-V 的陷阱入口要靠 trampoline 切页表，内核栈必须是**固定 VA**。
-//!   AArch64 这边内核恒等映射在 TTBR0 里一直有效，内核栈放 .bss 就行，
-//!   不需要额外的 `insert_framed_area`。
+//! 内核栈 ch5 起不在这里了：它跟着进程走（每个进程一块，可回收），见 `task/pid.rs`。
 //!
 //! ★ ELF 解析：对照 upstream 用的 `xmas_elf`，我们手写一个只认 ELF64/PT_LOAD 的
-//!   极简版本（见文件末尾）。ch4 只需要 `e_entry`、`p_offset/p_vaddr/p_filesz/p_memsz/p_flags`。
-
-use crate::config::{KERNEL_STACK_SIZE, MAX_APP_NUM};
-use crate::trap::TrapContext;
-
-#[repr(align(4096))]
-#[derive(Copy, Clone)]
-pub struct KernelStack {
-    data: [u8; KERNEL_STACK_SIZE],
-}
-
-const KSTACK_ZERO: KernelStack = KernelStack {
-    data: [0; KERNEL_STACK_SIZE],
-};
-
-// ⚠️ 必须是 `static mut`：不可变 static 会被放进 .rodata（只读），而栈是要写的。
-//    （ch2 已经因为这个踩过坑，见 docs/02 的坑 2。）
-static mut KERNEL_STACK: [KernelStack; MAX_APP_NUM] = [KSTACK_ZERO; MAX_APP_NUM];
-
-impl KernelStack {
-    fn get_sp(&self) -> usize {
-        self.data.as_ptr() as usize + KERNEL_STACK_SIZE
-    }
-
-    /// 把任务的初始 TrapContext 压在**内核栈顶**，返回它在内核栈上的地址
-    ///
-    /// 这个地址就是 `TaskContext::goto_restore(kstack_ptr)` 的 `sp`：
-    /// `__switch` 换过去之后 `ret` 到 `__restore_sp`，后者直接拿它当 TrapContext。
-    /// —— ch4 依然不让内核栈参与页表（恒等映射），所以这块和 ch3 一模一样。
-    pub fn push_context(&self, cx: TrapContext) -> usize {
-        let cx_ptr = (self.get_sp() - core::mem::size_of::<TrapContext>()) as *mut TrapContext;
-        unsafe {
-            cx_ptr.write_volatile(cx);
-        }
-        cx_ptr as usize
-    }
-}
-
-/// 取第 i 个任务的内核栈
-pub fn kernel_stack(app_id: usize) -> &'static KernelStack {
-    assert!(app_id < MAX_APP_NUM, "app_id 越界（改 config::MAX_APP_NUM）");
-    let base = core::ptr::addr_of!(KERNEL_STACK) as *const KernelStack;
-    unsafe { &*base.add(app_id) }
-}
+//!   极简版本，只需要 `e_entry`、`p_offset/p_vaddr/p_filesz/p_memsz/p_flags`。
 
 /// 链接器符号 `_num_app`：`[num_app, app0_start, ..., appN_end]`
 fn app_table() -> (&'static [usize], usize) {
@@ -70,11 +21,13 @@ fn app_table() -> (&'static [usize], usize) {
 }
 
 /// app 个数（对照 upstream 的 `get_num_app`）
+#[allow(dead_code)]
 pub fn get_num_app() -> usize {
     app_table().1
 }
 
 /// 第 i 个 app 的 ELF 字节（对照 upstream 的 `get_app_data`）
+#[allow(dead_code)]
 pub fn get_app_data(app_id: usize) -> &'static [u8] {
     let (starts, num_app) = app_table();
     assert!(app_id < num_app);
@@ -89,7 +42,7 @@ pub fn get_app_data(app_id: usize) -> &'static [u8] {
 // ===========================================================================
 // 极简 ELF64 解析（对照 upstream 用的 `xmas_elf`）
 //
-// 只认 ELF64 / little-endian / PT_LOAD，够 ch4 用。
+// 只认 ELF64 / little-endian / PT_LOAD，够 ch4/ch5 用。
 // 需要的字段：e_entry、e_phoff、e_phentsize、e_phnum；
 // 每个 PT_LOAD 的 p_flags / p_offset / p_vaddr / p_filesz / p_memsz。
 // ===========================================================================
@@ -167,4 +120,57 @@ fn read_u64(d: &[u8], off: usize) -> u64 {
         d[off + 6],
         d[off + 7],
     ])
+}
+
+// ===========================================================================
+// ch5：按名字找 app（`sys_exec` 用）
+// ===========================================================================
+
+// 链接器符号 `_app_names`：一串以 '\0' 结尾的 app 名字，顺序和 `_num_app` 一致
+// （build.rs 生成；sys_exec 按名字找 app 就靠它）
+unsafe extern "C" {
+    safe fn _app_names();
+}
+
+/// 遍历 `_app_names` 表，找到名字对应的 ELF
+pub fn get_app_data_by_name(name: &str) -> Option<&'static [u8]> {
+    let (starts, num_app) = app_table();
+    let mut p = _app_names as *const () as *const u8;
+    for i in 0..num_app {
+        // 找这个字符串的结尾
+        let mut end = p;
+        while unsafe { end.read_volatile() } != 0 {
+            end = unsafe { end.add(1) };
+        }
+        let bytes = unsafe { core::slice::from_raw_parts(p, end as usize - p as usize) };
+        if core::str::from_utf8(bytes).ok() == Some(name) {
+            return Some(unsafe {
+                core::slice::from_raw_parts(
+                    starts[i] as *const u8,
+                    starts[i + 1] - starts[i],
+                )
+            });
+        }
+        p = unsafe { end.add(1) };
+    }
+    None
+}
+
+/// 打印所有内嵌的 app 名字（对照 upstream 的 `list_apps`）
+pub fn list_apps() {
+    let (_, num_app) = app_table();
+    let mut p = _app_names as *const () as *const u8;
+    print!("[kernel] apps:");
+    for _ in 0..num_app {
+        let mut end = p;
+        while unsafe { end.read_volatile() } != 0 {
+            end = unsafe { end.add(1) };
+        }
+        let bytes = unsafe { core::slice::from_raw_parts(p, end as usize - p as usize) };
+        if let Ok(s) = core::str::from_utf8(bytes) {
+            print!(" {}", s);
+        }
+        p = unsafe { end.add(1) };
+    }
+    println!("");
 }

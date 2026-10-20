@@ -51,6 +51,7 @@ trait FrameAllocator {
 /// - 没回收过：`current` 一路往上加（从物理低地址往高地址分配）
 /// - 有回收：优先从 `recycled` 里拿（LIFO）
 pub struct StackFrameAllocator {
+    start_ppn: usize,
     current: usize,
     end: usize,
     recycled: Vec<usize>,
@@ -59,14 +60,32 @@ pub struct StackFrameAllocator {
 impl StackFrameAllocator {
     const fn new() -> Self {
         Self {
+            start_ppn: 0,
             current: 0,
             end: 0,
             recycled: Vec::new(),
         }
     }
     fn init(&mut self, l: PhysPageNum, r: PhysPageNum) {
+        self.start_ppn = l.0;
         self.current = l.0;
         self.end = r.0;
+    }
+}
+
+impl StackFrameAllocator {
+    /// 连续分配 `n` 页（内核栈要用物理连续的几页）
+    ///
+    /// ★ 只从"还没发出去"的区间（`current`）往上切，**不从 recycled 里拼**，
+    ///   这样才能保证物理连续。代价是连续分配的页在 Drop 后进 recycled，
+    ///   以后只会被单页分配复用 —— 对 8000 个页帧的池子完全够用。
+    fn alloc_contig(&mut self, n: usize) -> Option<PhysPageNum> {
+        if self.current + n > self.end {
+            return None;
+        }
+        let start = self.current;
+        self.current += n;
+        Some(start.into())
     }
 }
 
@@ -126,6 +145,30 @@ pub fn frame_alloc() -> Option<FrameTracker> {
 /// 归还一个页帧（只由 `FrameTracker::drop` 调用）
 fn frame_dealloc(ppn: PhysPageNum) {
     FRAME_ALLOCATOR.exclusive_access().dealloc(ppn);
+}
+
+/// 当前页帧使用情况：(总页数, 空闲页数)
+///
+/// `空闲 = 还没发出去的 + 回收栈里的`。进程退出/被回收之后这个数应该回到接近开机的值
+/// —— ch5 的验收就看它（证明页表/用户页/内核栈真的还回去了）。
+pub fn frame_stats() -> (usize, usize) {
+    let a = FRAME_ALLOCATOR.exclusive_access();
+    let total = a.end - a.start_ppn;
+    let free = (a.end - a.current) + a.recycled.len();
+    (total, free)
+}
+
+/// 连续申请 `n` 个物理页（ch5：内核栈）
+pub fn frame_alloc_contig(n: usize) -> Option<PhysPageNum> {
+    FRAME_ALLOCATOR.exclusive_access().alloc_contig(n)
+}
+
+/// 归还一段连续的物理页（ch5：内核栈 Drop）
+pub fn frame_dealloc_range(start: PhysPageNum, n: usize) {
+    let mut alloc = FRAME_ALLOCATOR.exclusive_access();
+    for i in 0..n {
+        alloc.dealloc(PhysPageNum(start.0 + i));
+    }
 }
 
 /// 页帧分配器自测（对照 upstream 的 `frame_allocator_test`）

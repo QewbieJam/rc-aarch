@@ -263,6 +263,41 @@ impl PageTable {
     }
 }
 
+/// 把用户指针指向的 **C 字符串** 拷回内核（ch5：`sys_exec(path)` 用）
+/// —— 对照 upstream 的 `translated_str`
+pub fn translated_str(token: usize, ptr: *const u8) -> alloc::string::String {
+    let page_table = PageTable::from_token(token);
+    let mut string = alloc::string::String::new();
+    let mut va = ptr as usize;
+    loop {
+        let vpn = VirtAddr::from(va).floor();
+        let pte = page_table
+            .translate(vpn)
+            .unwrap_or_else(|| panic!("用户字符串地址 {:#x} 没有映射", va));
+        assert!(pte.is_user(), "用户字符串地址 {:#x} 指向内核页", va);
+        let ch = pte.ppn().get_bytes_array()[va & 0xfff];
+        if ch == 0 {
+            break;
+        }
+        string.push(ch as char);
+        va += 1;
+    }
+    string
+}
+
+/// 把用户指针指向的 i32 变成内核可写引用（ch5：`waitpid` 写回 exit_code）
+/// —— 对照 upstream 的 `translated_refmut`
+pub fn translated_refmut(token: usize, ptr: *mut i32) -> &'static mut i32 {
+    let page_table = PageTable::from_token(token);
+    let va = ptr as usize;
+    let vpn = VirtAddr::from(va).floor();
+    let pte = page_table
+        .translate(vpn)
+        .unwrap_or_else(|| panic!("用户地址 {:#x} 没有映射", va));
+    assert!(pte.is_user(), "用户地址 {:#x} 指向内核页", va);
+    unsafe { &mut *(pte.ppn().get_bytes_array().as_mut_ptr().add(va & 0xfff) as *mut i32) }
+}
+
 /// 把用户指针指向的一段内存翻译成内核能读写的切片（对照 upstream 的同名函数）
 ///
 /// 为什么要这一步？RISC-V/AArch64 的内核和用户用的是**不同的虚拟地址空间**，

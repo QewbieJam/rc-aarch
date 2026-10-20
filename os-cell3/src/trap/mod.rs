@@ -138,13 +138,13 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
             cx.x[0] = ret as usize;
         }
         ec::DABT_LOW | ec::DABT_CUR => {
-            // 对应 rCore 的 StoreFault / StorePageFault（ch2-D 里改成 kill app）
-            crate::println!("[trap]   -> Data Abort @ {:#x}", far);
-            fault_from(far, spsr);
+            // 对应 rCore 的 StoreFault / StorePageFault → 退出码 -2
+            crate::println!("[trap]   -> Data Abort @ {:#x}（进程以 -2 退出）", far);
+            fault_from(far, spsr, -2);
         }
         ec::IABT_LOW | ec::IABT_CUR => {
-            crate::println!("[trap]   -> Instruction Abort @ {:#x}", far);
-            fault_from(far, spsr);
+            crate::println!("[trap]   -> Instruction Abort @ {:#x}（进程以 -2 退出）", far);
+            fault_from(far, spsr, -2);
         }
         ec::UNKNOWN => {
             // 对应 rCore 的 IllegalInstruction。
@@ -161,8 +161,8 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
                 insn
             );
             // ⚠️ 这里**不能**像 RISC-V 那样靠 `+= 4` 越过非法指令来"忽略"它，
-            //    因为我们要把 app 杀掉换下一个（见 fault_from）
-            fault_from(elr, spsr);
+            //    因为我们要把进程杀掉（退出码 -3，对应 upstream 的 IllegalInstruction 分支）
+            fault_from(elr, spsr, -3);
         }
         _ => {
             crate::println!("[trap]   -> 尚未处理，先停在这里");
@@ -207,13 +207,17 @@ pub fn self_test() {
 /// ★ ch3 的变化：upstream 的 trap_handler 在 ch3 里把 `run_next_app()` 改成了
 ///   `exit_current_and_run_next()`，我们照做 —— ch2 的 `batch::run_next_app`
 ///   从此不再参与调度（文件留着当对照）。
-fn fault_from(addr: usize, spsr: usize) -> ! {
+fn fault_from(addr: usize, spsr: usize, exit_code: i32) -> ! {
     if spsr & 0xf == 0 {
-        crate::println!("[trap] EL0 的 app 异常于 {:#x} → 杀掉它，跑下一个任务", addr);
-        crate::task::exit_current_and_run_next();
+        crate::println!(
+            "[trap] EL0 的进程异常于 {:#x} → 以退出码 {} 结束（父进程 waitpid 能看到）",
+            addr,
+            exit_code
+        );
+        crate::task::exit_current_and_run_next(exit_code);
     } else {
         crate::println!("[trap] 内核自己（EL1）异常于 {:#x} → 停机", addr);
-        shutdown();
+        shutdown_with(-1);
     }
 }
 
@@ -302,7 +306,8 @@ pub extern "C" fn irq_dispatch(_cx: &mut TrapContext) {
     // ★ ch3：时间片到了 —— 当前任务 Running → Ready，换下一个（对照 rCore 在
     //   trap_handler 里 `Trap::Interrupt(SupervisorTimer) => suspend_current_and_run_next()`）
     //   注意 EOI 必须在切换**之前**：先把中断真正撤销，再去跑别的任务。
-    if irq == crate::gic::IRQ_TIMER && crate::task::is_ready() {
+    // ch5：定时器只会在某个进程跑在 EL0 时到来，直接让出即可
+    if irq == crate::gic::IRQ_TIMER {
         crate::task::suspend_current_and_run_next();
     }
 }
@@ -420,7 +425,20 @@ pub fn init_timer_irq() {
     println!("[timer] 定时器已武装；IRQ 在内核态保持屏蔽，eret 到 EL0 后自动放行");
 }
 
-/// 停机（裸机 cell 没有关机能力，只能死循环等外部处理）
+/// 停机（裸机 cell 没有关机能力，只能死循环等外部处理；exit_code 只用于打印）
+pub fn shutdown_with(exit_code: i32) -> ! {
+    let (total, free) = crate::mm::frame_stats();
+    crate::println!(
+        "[kernel] shutdown：initproc exit_code={}；页帧 {}/{} 空闲（回收正常的话应该接近开机值）",
+        exit_code,
+        free,
+        total
+    );
+    infinite_loop()
+}
+
+/// 停机（默认退出码 0）
+#[allow(dead_code)]
 pub fn shutdown() -> ! {
     crate::println!("[trap] shutdown：进入死循环（ch3 之后可以改成报状态给 hypervisor）");
     infinite_loop()

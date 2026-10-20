@@ -1,175 +1,142 @@
-//! 任务管理（ch4）—— 对照 rCore ch4 的 `os/src/task/mod.rs`
+//! 任务/进程管理（ch5）—— 对照 rCore ch5 的 `os/src/task/mod.rs`
 //!
-//! 和 ch3 相比，调度算法**一点没变**（还是轮转），变的是"任务是什么"：
-//!   ch3：任务 = 一个固定的物理地址槽位 + 静态栈；
-//!   ch4：任务 = 一套**独立的页表**（MemorySet），物理页由 frame allocator 给。
+//! ch5 的模块划分（和 upstream 一一对应）：
+//!   task/context.rs    TaskContext（不变）
+//!   task/switch.S/.rs  __switch（不变）
+//!   task/task.rs       TaskControlBlock（Arc + inner）
+//!   task/pid.rs        pid 分配 + 内核栈
+//!   task/manager.rs    就绪队列（FIFO）
+//!   task/processor.rs  Processor + run_tasks + schedule
+//!   task/mod.rs        把上面几个粘起来：suspend / exit / initproc
 //!
-//! 于是 `__switch` 前后多了两件事：
-//!   ① 切 TTBR0（`memory_set.activate(asid)`）—— 换地址空间
-//!   ② 内核映射在**每个任务页表里都有**（共享 L1[3] 子树），所以切过去之后
-//!      内核代码/内核栈照样能访问，不需要像 RISC-V 那样切回"内核 satp"。
-//!
-//! ★ `tasks` 从 `[TCB; MAX_APP_NUM]` 变成了 `Vec<TCB>`（对照 upstream），
-//!   所以 TASK_MANAGER 改成"静态构造 + `init()` 里 push"，
-//!   依然不引 `lazy_static`。
+//! ★ 和 ch4 最大的行为变化：
+//!   - 不再"数组里扫 Ready"，而是 **idle 循环 + 就绪队列**；
+//!   - 进程退出 → **Zombie**（保留 TCB 等父进程 waitpid 回收），
+//!     而不是直接从调度器消失；
+//!   - 第一个进程固定是 `initproc`（pid 1），它退出就意味着系统该关机了。
 
 mod context;
+mod manager;
+mod pid;
+mod processor;
 mod switch;
 
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::loader::{get_app_data, get_num_app};
+use crate::loader::get_app_data_by_name;
 use crate::sync::UPSafeCell;
-use alloc::vec::Vec;
-use switch::__switch;
+use alloc::sync::Arc;
 use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
-
-/// 任务管理器
-pub struct TaskManager {
-    inner: UPSafeCell<TaskManagerInner>,
-}
-
-struct TaskManagerInner {
-    tasks: Vec<TaskControlBlock>,
-    current_task: usize,
-}
-
-/// 全局唯一实例
-static TASK_MANAGER: TaskManager = TaskManager {
-    inner: unsafe { UPSafeCell::new(TaskManagerInner { tasks: Vec::new(), current_task: 0 }) },
+pub use manager::add_task;
+pub use processor::{
+    current_task, current_task_id, current_user_token, run_tasks, schedule, take_current_task,
 };
 
-/// 任务表是否已经建好（ch3-A 那种"没有任务的定时器自测"要用）
-static mut TASKS_READY: bool = false;
+/// initproc 的 pid（它退出 = 系统关机）
+pub const IDLE_PID: usize = 1;
 
-/// 任务表就绪没？
-pub fn is_ready() -> bool {
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TASKS_READY)) }
+/// 全局唯一的 initproc（也会被用来"托管"孤儿进程）
+static INITPROC: UPSafeCell<Option<Arc<TaskControlBlock>>> = unsafe { UPSafeCell::new(None) };
+
+/// 取 initproc 的 Arc
+pub fn initproc() -> Arc<TaskControlBlock> {
+    INITPROC
+        .exclusive_access()
+        .as_ref()
+        .expect("initproc 还没创建")
+        .clone()
 }
 
-impl TaskManager {
-    /// 跑第一个任务
-    fn run_first_task(&self) -> ! {
-        let mut inner = self.inner.exclusive_access();
-        let task0 = &mut inner.tasks[0];
-        task0.task_status = TaskStatus::Running;
-        let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
-        let asid = task0.asid;
-        // ★ 先把 TTBR0 切到任务 0 的页表（内核映射共享，所以这条语句本身安全）
-        task0.memory_set.activate(asid);
-        drop(inner);
-
-        let mut _unused = TaskContext::zero_init();
-        unsafe {
-            __switch(&mut _unused as *mut TaskContext, next_task_cx_ptr);
-        }
-        panic!("run_first_task: 不应该回到这里");
-    }
-
-    fn mark_current_suspended(&self) {
-        let mut inner = self.inner.exclusive_access();
-        let current = inner.current_task;
-        inner.tasks[current].task_status = TaskStatus::Ready;
-    }
-
-    fn mark_current_exited(&self) {
-        let mut inner = self.inner.exclusive_access();
-        let current = inner.current_task;
-        inner.tasks[current].task_status = TaskStatus::Exited;
-    }
-
-    fn find_next_task(&self) -> Option<usize> {
-        let inner = self.inner.exclusive_access();
-        let current = inner.current_task;
-        let num_app = inner.tasks.len();
-        (current + 1..current + num_app + 1)
-            .map(|id| id % num_app)
-            .find(|id| inner.tasks[*id].task_status == TaskStatus::Ready)
-    }
-
-    fn get_current_token(&self) -> usize {
-        let inner = self.inner.exclusive_access();
-        inner.tasks[inner.current_task].token()
-    }
-
-    fn change_current_program_brk(&self, size: i32) -> Option<usize> {
-        let mut inner = self.inner.exclusive_access();
-        let cur = inner.current_task;
-        inner.tasks[cur].change_program_brk(size)
-    }
-
-    fn run_next_task(&self) {
-        if let Some(next) = self.find_next_task() {
-            let mut inner = self.inner.exclusive_access();
-            let current = inner.current_task;
-            inner.tasks[next].task_status = TaskStatus::Running;
-            inner.current_task = next;
-
-            let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
-            let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
-            let asid = inner.tasks[next].asid;
-            // ★ 换地址空间（TTBR0）+ 清 TLB，再换栈/换执行流
-            inner.tasks[next].memory_set.activate(asid);
-            drop(inner);
-
-            unsafe {
-                __switch(current_task_cx_ptr, next_task_cx_ptr);
-            }
-        } else {
-            println!("[kernel] All applications completed!");
-            crate::trap::shutdown();
-        }
-    }
+/// 创建 initproc 并放进就绪队列（对照 upstream 的 `add_initproc`）
+pub fn add_initproc() {
+    let initproc = Arc::new(TaskControlBlock::new(
+        get_app_data_by_name("initproc").expect("找不到 initproc 这个 app"),
+    ));
+    *INITPROC.exclusive_access() = Some(initproc.clone());
+    add_task(initproc);
+    // initproc 的代码是刚加载的（新物理页），同步一次 I-cache
+    crate::mm::sync_icache_all();
 }
 
-/// 建任务表（对应 upstream 的 lazy_static 初始化块）
-pub fn init() {
-    let num_app = get_num_app();
-    println!("[kernel] num_app = {}", num_app);
-    let mut inner = TASK_MANAGER.inner.exclusive_access();
-    for i in 0..num_app {
-        println!("[kernel] 建任务 {}（ELF {} 字节）", i, get_app_data(i).len());
-        inner.tasks.push(TaskControlBlock::new(get_app_data(i), i));
-    }
-    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(TASKS_READY), true) };
-    println!(
-        "[kernel] task manager: {} 个任务就绪（每任务一套页表）",
-        num_app
-    );
-}
-
-/// 跑第一个任务
-pub fn run_first_task() -> ! {
-    TASK_MANAGER.run_first_task()
-}
-
-/// 主动让出
+/// 主动让出：Running → Ready，回就绪队列，切回调度器
 pub fn suspend_current_and_run_next() {
-    TASK_MANAGER.mark_current_suspended();
-    TASK_MANAGER.run_next_task();
+    let task = take_current_task().expect("没有正在运行的进程");
+    let mut inner = task.inner_exclusive_access();
+    let task_cx_ptr = &mut inner.task_cx as *mut TaskContext;
+    inner.task_status = TaskStatus::Ready;
+    drop(inner);
+
+    add_task(task);
+    schedule(task_cx_ptr);
 }
 
-/// 结束当前任务
-pub fn exit_current_and_run_next() -> ! {
-    TASK_MANAGER.mark_current_exited();
-    TASK_MANAGER.run_next_task();
-    panic!("exit_current_and_run_next: Exited 的任务不应该被再次调度");
+/// 退出当前进程：Running → Zombie，记录退出码，切回调度器
+///
+/// 返回类型是 `!`：Zombie 永远不会再被调度，所以这个函数不会返回。
+pub fn exit_current_and_run_next(exit_code: i32) -> ! {
+    let task = take_current_task().expect("没有正在运行的进程");
+    let pid = task.getpid();
+
+    // ★ initproc 退出 = 系统该关了（对应 upstream 的 IDLE_PID 判断）
+    if pid == IDLE_PID {
+        println!("[kernel] initproc 退出，exit_code={}，系统停机", exit_code);
+        crate::trap::shutdown_with(exit_code);
+    }
+
+    let mut inner = task.inner_exclusive_access();
+    inner.task_status = TaskStatus::Zombie;
+    inner.exit_code = exit_code;
+
+    // 孤儿进程托付给 initproc（对照 upstream 的 reparent 逻辑）
+    {
+        let init = initproc();
+        let mut init_inner = init.inner_exclusive_access();
+        for child in inner.children.iter() {
+            child.inner_exclusive_access().parent = Some(Arc::downgrade(&init));
+            init_inner.children.push(child.clone());
+        }
+    }
+    inner.children.clear();
+    // 用户页帧马上还回去（页表留着，等 waitpid 回收 TCB 时一起释放）
+    inner.memory_set.recycle_data_pages();
+    drop(inner);
+    // 手动 drop：如果父进程已经不管我们了，这里就是最后一个 Arc
+    drop(task);
+
+    // 不再保存上下文，直接切回调度器
+    let mut _unused = TaskContext::zero_init();
+    schedule(&mut _unused as *mut TaskContext);
+    panic!("Zombie 进程不应该被再次调度");
 }
 
-/// 当前任务号（调试用）
-pub fn current_task_id() -> usize {
-    TASK_MANAGER.inner.exclusive_access().current_task
-}
-
-/// 当前任务的页表 token（sys_write 翻译用户指针时用）
-pub fn current_user_token() -> usize {
-    TASK_MANAGER.get_current_token()
-}
-
-/// sbrk：改当前任务的 program break
+/// sbrk：改当前进程的 program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
-    TASK_MANAGER.change_current_program_brk(size)
+    let task = current_task().expect("没有正在运行的进程");
+    let mut inner = task.inner_exclusive_access();
+    let old_break = inner.program_brk;
+    let new_brk = inner.program_brk as isize + size as isize;
+    if new_brk < inner.heap_bottom as isize {
+        return None;
+    }
+    let heap_bottom = inner.heap_bottom;
+    let result = if size < 0 {
+        inner
+            .memory_set
+            .shrink_to(heap_bottom.into(), (new_brk as usize).into())
+    } else {
+        inner
+            .memory_set
+            .append_to(heap_bottom.into(), (new_brk as usize).into())
+    };
+    if result {
+        inner.program_brk = new_brk as usize;
+        let asid = task.asid;
+        inner.memory_set.activate(asid);
+        Some(old_break)
+    } else {
+        None
+    }
 }

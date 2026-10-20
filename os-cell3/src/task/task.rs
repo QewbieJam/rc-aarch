@@ -1,90 +1,173 @@
-//! 任务控制块（ch4）—— 对照 rCore ch4 的 `os/src/task/task.rs`
+//! 任务/进程控制块（ch5）—— 对照 rCore ch5 的 `os/src/task/task.rs`
 //!
-//! ch4 的 TCB 比 ch3 多了两样东西：
-//!   ① `memory_set`：每个任务**一套自己的页表**（ch3 是所有任务共用一套物理地址）
-//!   ② `heap_bottom` / `program_brk`：给 `sys_sbrk`（214）用的堆边界
+//! ch5 把 ch4 的"裸 TCB"升级成真正的**进程**：
+//!   - `Arc<TaskControlBlock>`：可以同时被就绪队列、父进程的 children 列表持有；
+//!   - 内部用 `UPSafeCell` 保护可变状态（对应 upstream 的 `inner`）；
+//!   - 增加 pid、内核栈、父子关系、退出码、Zombie 状态；
+//!   - 会 `fork()`（复制地址空间）和 `exec()`（换掉地址空间）。
 //!
-//! 和 upstream 的差别：
-//!   - upstream 还有 `trap_cx_ppn`（TrapContext 放在用户空间的 TRAP_CONTEXT 页里，
-//!     因为它的陷阱入口在 trampoline 上用固定 VA 找 TrapContext）。
-//!     我们的 TrapContext 就在**内核栈顶**（恒等映射，随时可访问），
-//!     所以不需要那个字段，也不需要 `get_trap_cx()`。
-//!   - upstream 在 `new()` 里还往 KERNEL_SPACE 里插一段内核栈；我们用 .bss 静态数组。
+//! ★ 和 upstream 的差别（都是因为 AArch64 不需要 trampoline）：
+//!   1) upstream 有 `trap_cx_ppn`：TrapContext 放在用户空间固定 VA 的页里。
+//!      我们的 TrapContext 就在**内核栈顶**，所以只存一个 `trap_cx_ptr`。
+//!      好处：fork 时直接 `*child_cx = *parent_cx` 复制寄存器现场，
+//!      exec 时直接覆盖，不需要页表换算。
+//!   2) upstream 用 `KernelStack::new(&pid)` 映射固定 VA；我们用页帧池里的连续两页
+//!      （见 pid.rs）。
 
+use super::pid::{KernelStack, PidHandle, pid_alloc};
 use super::TaskContext;
-use crate::loader::kernel_stack;
-use crate::mm::{MemorySet, VirtAddr};
+use crate::mm::MemorySet;
+use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+use core::cell::RefMut;
 
-/// 任务控制块
+/// 任务控制块：`pid` / 内核栈 是不变的，其它都在 `inner` 里
 pub struct TaskControlBlock {
-    pub task_status: TaskStatus,
-    /// 内核态切换上下文（ra/sp/callee-saved）
-    pub task_cx: TaskContext,
-    /// 这个任务独占的地址空间（页表 + 映射区）
-    pub memory_set: MemorySet,
-    /// TTBR0 里的 ASID（给每个任务一个非 0 值，方便以后做 TLB 优化）
+    /// 进程号（Drop 时自动回收）
+    pub pid: PidHandle,
+    /// 内核栈（Drop 时自动还页帧；这里"只持有不使用"，栈顶地址在 inner.trap_cx_ptr 里）
+    #[allow(dead_code)]
+    pub kernel_stack: KernelStack,
+    /// TTBR0 用的 ASID
     pub asid: u16,
-    /// 堆起点（= 用户栈顶，对照 upstream 的 `heap_bottom`）
+    inner: UPSafeCell<TaskControlBlockInner>,
+}
+
+/// TCB 的可变部分（对照 upstream 的 `TaskControlBlockInner`）
+pub struct TaskControlBlockInner {
+    /// 内核栈顶那份 TrapContext 的地址（用户态现场）
+    pub trap_cx_ptr: usize,
+    /// 内核态切换上下文
+    pub task_cx: TaskContext,
+    pub task_status: TaskStatus,
+    /// 地址空间
+    pub memory_set: MemorySet,
+    /// sbrk 的堆底 / 当前 program break
     pub heap_bottom: usize,
-    /// 当前 program break（对照 upstream 的 `program_brk`）
     pub program_brk: usize,
+    /// 父进程（弱引用，避免父子互相持有）
+    pub parent: Option<Weak<TaskControlBlock>>,
+    /// 子进程
+    pub children: Vec<Arc<TaskControlBlock>>,
+    /// 退出码（Zombie 才有意义）
+    pub exit_code: i32,
+}
+
+impl TaskControlBlockInner {
+    /// 取用户态现场（就在内核栈顶，恒等映射，随时可访问）
+    pub fn get_trap_cx(&self) -> &'static mut TrapContext {
+        unsafe { &mut *(self.trap_cx_ptr as *mut TrapContext) }
+    }
+    pub fn get_user_token(&self) -> usize {
+        self.memory_set.token()
+    }
+    pub fn is_zombie(&self) -> bool {
+        self.task_status == TaskStatus::Zombie
+    }
 }
 
 impl TaskControlBlock {
-    /// 从一个 ELF 建任务（对照 upstream 的 `TaskControlBlock::new`）
-    pub fn new(elf_data: &[u8], app_id: usize) -> Self {
-        // ① 建地址空间：ELF 各段 + 用户栈（物理页由 frame allocator 给）
+    pub fn inner_exclusive_access(&self) -> RefMut<'_, TaskControlBlockInner> {
+        self.inner.exclusive_access()
+    }
+
+    /// 从 ELF 新建一个进程（对照 upstream 的 `TaskControlBlock::new`）
+    pub fn new(elf_data: &[u8]) -> Self {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
-        // ② 在本任务的内核栈顶压一份初始 TrapContext，并让 task_cx 指向它
-        let trap_cx_addr =
-            kernel_stack(app_id).push_context(TrapContext::app_init_context(entry_point, user_sp));
-
+        let pid = pid_alloc();
+        let kernel_stack = KernelStack::new();
+        // 在内核栈顶压初始 TrapContext
+        let trap_cx_ptr = kernel_stack.push_on_top(TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+        ));
         Self {
-            task_status: TaskStatus::Ready,
-            task_cx: TaskContext::goto_trap_return(trap_cx_addr),
-            memory_set,
-            asid: app_id as u16 + 1,
-            heap_bottom: user_sp,
-            program_brk: user_sp,
+            asid: Self::asid_of(pid.0),
+            pid,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ptr,
+                    task_cx: TaskContext::goto_trap_return(trap_cx_ptr),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                    parent: None,
+                    children: Vec::new(),
+                    exit_code: 0,
+                })
+            },
         }
     }
 
-    pub fn token(&self) -> usize {
-        self.memory_set.token()
+    fn asid_of(pid: usize) -> u16 {
+        // ASID 在 TCR_EL1.AS=0 时是 8 位；我们每次切换都 tlbi vmalle1，所以
+        // ASID 实际上不参与 TLB 匹配，取低 8 位即可（pid 从 1 开始，不会为 0）
+        (pid & 0xff) as u16
     }
 
-    /// 改 program break（对照 upstream 的 `change_program_brk`）
-    ///
-    /// 返回旧的 brk；失败（越界/找不到区域）返回 None。
-    pub fn change_program_brk(&mut self, size: i32) -> Option<usize> {
-        let old_break = self.program_brk;
-        let new_brk = self.program_brk as isize + size as isize;
-        if new_brk < self.heap_bottom as isize {
-            return None;
+    /// 换成另一个 ELF（对照 upstream 的 `exec`）
+    pub fn exec(&self, elf_data: &[u8]) {
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let mut inner = self.inner_exclusive_access();
+        inner.memory_set = memory_set;
+        inner.heap_bottom = user_sp;
+        inner.program_brk = user_sp;
+        // 用全新的 TrapContext 覆盖栈顶那份（入口/栈都换了）
+        *inner.get_trap_cx() = TrapContext::app_init_context(entry_point, user_sp);
+        // ★ 新页表要立刻生效：exec 之后不再经过调度器，直接 eret 回用户态
+        inner.memory_set.activate(self.asid);
+    }
+
+    /// 复制当前进程（对照 upstream 的 `fork`）
+    pub fn fork(self: &Arc<Self>) -> Arc<Self> {
+        let mut parent_inner = self.inner_exclusive_access();
+        // ① 深拷贝地址空间（每个用户页都是新分配的物理页）
+        let memory_set = MemorySet::from_existed_user(&parent_inner.memory_set);
+        // ② 新 pid + 新内核栈
+        let pid = pid_alloc();
+        let kernel_stack = KernelStack::new();
+        // ③ 把父进程的寄存器现场复制到子进程内核栈顶，fork 在子进程里返回 0
+        let trap_cx_ptr = kernel_stack.push_on_top(*parent_inner.get_trap_cx());
+        unsafe {
+            (*(trap_cx_ptr as *mut TrapContext)).x[0] = 0;
         }
-        let result = if size < 0 {
-            self.memory_set
-                .shrink_to(VirtAddr(self.heap_bottom), VirtAddr(new_brk as usize))
-        } else {
-            self.memory_set
-                .append_to(VirtAddr(self.heap_bottom), VirtAddr(new_brk as usize))
-        };
-        if result {
-            self.program_brk = new_brk as usize;
-            // 页表变了，当前任务的 TLB 得清一下（我们没用 ASID 精细失效，直接全清）
-            self.memory_set.activate(self.asid);
-            Some(old_break)
-        } else {
-            None
-        }
+        let child = Arc::new(Self {
+            asid: Self::asid_of(pid.0),
+            pid,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ptr,
+                    task_cx: TaskContext::goto_trap_return(trap_cx_ptr),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                })
+            },
+        });
+        parent_inner.children.push(child.clone());
+        // ④ 子进程的代码页是新物理页，必须同步 I-cache（ch4 的坑 2）
+        crate::mm::sync_icache_all();
+        child
+    }
+
+    pub fn getpid(&self) -> usize {
+        self.pid.0
     }
 }
 
-/// 任务状态（ch4 去掉了 `UnInit`：任务是在 Vec 里现建的，没有"未初始化"阶段）
+/// 进程状态（ch5 起：没有 Exited，退出就是 Zombie）
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum TaskStatus {
     Ready,
     Running,
-    Exited,
+    Zombie,
 }

@@ -1,22 +1,25 @@
-//! 用户态系统调用（ch3）
+//! 用户态系统调用（ch5）
 //!
-//! 对照 rCore ch3 的 `user/src/syscall.rs`：
-//!   rCore: `ecall`，调用号在 **x17(a7)**，参数在 **x10/x11/x12(a0/a1/a2)**，返回值 x10
+//! 对照 rCore ch5 的 `user/src/syscall.rs`：
+//!   rCore: `ecall`，调用号在 x17(a7)，参数在 x10/x11/x12，返回值 x10
 //!   我们:  `svc #0`，调用号在 **x8**，参数在 **x0/x1/x2**，返回值 x0
 //!          （AArch64/Linux 的 ABI 习惯；内核侧 syscall/mod.rs 与之对应）
+//!
+//! 调用号全部和 Linux/aarch64 对齐，方便以后换真 Linux ABI。
 
 use core::arch::asm;
 
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
-/// ch3 新增：Linux sched_yield 的号，和内核 syscall/mod.rs 保持一致
 const SYSCALL_YIELD: usize = 124;
-/// ch3 新增：毫秒时间
 const SYSCALL_GET_TIME: usize = 169;
-/// ch4 新增：改 program break（Linux brk，214）
 const SYSCALL_SBRK: usize = 214;
+const SYSCALL_GETPID: usize = 172;
+const SYSCALL_FORK: usize = 220;
+const SYSCALL_EXEC: usize = 221;
+const SYSCALL_WAITPID: usize = 260;
 
-/// 发起一次系统调用（对照 rCore 的 `fn syscall(id: usize, args: [usize; 3]) -> isize`）
+/// 发起一次系统调用
 fn syscall(id: usize, args: [usize; 3]) -> isize {
     let mut ret: isize;
     unsafe {
@@ -35,21 +38,37 @@ pub fn sys_write(fd: usize, buffer: &[u8]) -> isize {
     syscall(SYSCALL_WRITE, [fd, buffer.as_ptr() as usize, buffer.len()])
 }
 
-pub fn sys_exit(exit_code: i32) -> isize {
-    syscall(SYSCALL_EXIT, [exit_code as usize, 0, 0])
+/// 退出：**不会返回**（进程被内核标成 Zombie）
+pub fn sys_exit(exit_code: i32) -> ! {
+    syscall(SYSCALL_EXIT, [exit_code as usize, 0, 0]);
+    panic!("sys_exit 不应该返回！");
 }
 
-/// 主动让出 CPU（对照 rCore 的 `pub fn sys_yield() -> isize`）
 pub fn sys_yield() -> isize {
     syscall(SYSCALL_YIELD, [0, 0, 0])
 }
 
-/// 读毫秒时间（对照 rCore 的 `pub fn sys_get_time() -> isize`）
 pub fn sys_get_time() -> isize {
     syscall(SYSCALL_GET_TIME, [0, 0, 0])
 }
 
-/// 改 program break（对照 rCore ch4 的 `pub fn sys_sbrk(size: i32) -> isize`）
 pub fn sys_sbrk(size: i32) -> isize {
     syscall(SYSCALL_SBRK, [size as usize, 0, 0])
+}
+
+pub fn sys_getpid() -> isize {
+    syscall(SYSCALL_GETPID, [0, 0, 0])
+}
+
+pub fn sys_fork() -> isize {
+    syscall(SYSCALL_FORK, [0, 0, 0])
+}
+
+/// `path` 必须是**以 '\0' 结尾**的字符串（内核按 C 字符串读）
+pub fn sys_exec(path: &str) -> isize {
+    syscall(SYSCALL_EXEC, [path.as_ptr() as usize, 0, 0])
+}
+
+pub fn sys_waitpid(pid: isize, exit_code: *mut i32) -> isize {
+    syscall(SYSCALL_WAITPID, [pid as usize, exit_code as usize, 0])
 }

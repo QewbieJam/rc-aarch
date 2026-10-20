@@ -1,41 +1,113 @@
-//! 进程/任务类系统调用（ch3）—— 对照 rCore ch3 的 `os/src/syscall/process.rs`
+//! 进程类系统调用（ch5）—— 对照 rCore ch5 的 `os/src/syscall/process.rs`
 //!
-//! ch2 里 `sys_exit` 是"杀掉 app 换下一个"（`batch::run_next_app`）；
-//! ch3 改成走任务调度器：
-//!   - `sys_exit`  → `task::exit_current_and_run_next()`（状态置 Exited，不再调度）
-//!   - `sys_yield` → `task::suspend_current_and_run_next()`（状态回 Ready，让出 CPU）
-//!   - `sys_get_time` → 毫秒时间（ch3 的 app 用它观察"时间片"）
+//! ch5 新增四个：
+//!   getpid(172) / fork(220) / exec(221) / waitpid(260)
+//!
+//! fork 的语义（和 Linux 一致）：
+//!   - 父进程里返回**子进程 pid**（>0）；
+//!   - 子进程里返回 **0**；
+//!   - 失败返回负数（我们这里分配不出来的话会 panic，暂不模拟失败）。
+//!
+//! exec 的语义：把当前进程的地址空间整个换掉，从新 ELF 的入口重新开始跑。
+//! 注意它是"换汤不换药"—— pid、父子关系、内核栈都不变。
 
-use crate::task::{change_program_brk, exit_current_and_run_next, suspend_current_and_run_next};
+use crate::loader::get_app_data_by_name;
+use crate::mm::{translated_refmut, translated_str};
+use crate::task::{
+    add_task, current_task, current_user_token, exit_current_and_run_next,
+    suspend_current_and_run_next,
+};
 use crate::timer::get_time_ms;
+use alloc::sync::Arc;
 
-/// 退出（对照 rCore 的 `pub fn sys_exit(exit_code: i32) -> !`）
-///
-/// 注意返回类型是 `!`：一个任务退出之后就再也不会被调度回来了。
+/// 退出（对照 upstream 的 `sys_exit`）
 pub fn sys_exit(exit_code: i32) -> ! {
-    crate::println!("[kernel] Application exited with code {}", exit_code);
-    exit_current_and_run_next()
+    exit_current_and_run_next(exit_code)
 }
 
-/// 主动让出 CPU（对照 rCore 的 `pub fn sys_yield() -> isize`）
+/// 主动让出
 pub fn sys_yield() -> isize {
     suspend_current_and_run_next();
     0
 }
 
-/// 当前时间（毫秒）（对照 rCore 的 `pub fn sys_get_time() -> isize`）
+/// 毫秒时间
 pub fn sys_get_time() -> isize {
     get_time_ms() as isize
 }
 
-/// 改 program break（对照 rCore ch4 的 `pub fn sys_sbrk(size: i32) -> isize`）
-///
-/// 成功返回**旧的** brk，失败返回 -1。
-/// 语义和 Linux 的 brk/sbrk 一致：`sbrk(0)` 查当前 brk，`sbrk(n)` 扩/缩 n 字节。
+/// 改 program break（ch4 的 sbrk，ch5 继续用）
 pub fn sys_sbrk(size: i32) -> isize {
-    if let Some(old_brk) = change_program_brk(size) {
-        old_brk as isize
+    match crate::task::change_program_brk(size) {
+        Some(old) => old as isize,
+        None => -1,
+    }
+}
+
+/// 取当前进程 pid（对照 upstream 的 `sys_getpid`）
+pub fn sys_getpid() -> isize {
+    current_task().unwrap().getpid() as isize
+}
+
+/// 复制当前进程（对照 upstream 的 `sys_fork`）
+pub fn sys_fork() -> isize {
+    let current = current_task().unwrap();
+    let new_task = current.fork();
+    let new_pid = new_task.getpid();
+    // ★ 子进程的 TrapContext 已经在 fork() 里把 x0 置成 0 了；
+    //   父进程的返回值由 trap_handler 写回 x0（= new_pid）。
+    add_task(new_task);
+    new_pid as isize
+}
+
+/// 换成另一个 ELF 执行（对照 upstream 的 `sys_exec`）
+///
+/// `path` 是用户态 C 字符串指针，必须先翻译回内核（ch4 的坑 4）。
+pub fn sys_exec(path: *const u8) -> isize {
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    match get_app_data_by_name(path.as_str()) {
+        Some(data) => {
+            current_task().unwrap().exec(data);
+            0
+        }
+        None => {
+            crate::println!("[kernel] exec: 找不到 app \"{}\"", path);
+            -1
+        }
+    }
+}
+
+/// 等待子进程（对照 upstream 的 `sys_waitpid`）
+///
+/// - 没有这个子进程          → -1
+/// - 有但还在跑              → -2
+/// - 有僵尸子进程            → 回收它，返回它的 pid，并把 exit_code 写回用户指针
+pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if !inner
+        .children
+        .iter()
+        .any(|p| pid == -1 || pid as usize == p.getpid())
+    {
+        return -1;
+    }
+    let pair = inner.children.iter().enumerate().find(|(_, p)| {
+        p.inner_exclusive_access().is_zombie() && (pid == -1 || pid as usize == p.getpid())
+    });
+    if let Some((idx, _)) = pair {
+        // 从 children 里摘掉；此时 Arc 只剩我们手里这一个
+        let child = inner.children.remove(idx);
+        assert_eq!(Arc::strong_count(&child), 1);
+        let found_pid = child.getpid();
+        let exit_code = child.inner_exclusive_access().exit_code;
+        // 写回用户指针（父进程的地址空间）
+        *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
+        // child 在这里 drop：TCB / 页表 / 页帧 / 内核栈 / pid 全部回收
+        drop(child);
+        found_pid as isize
     } else {
-        -1
+        -2
     }
 }

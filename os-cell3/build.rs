@@ -122,5 +122,12 @@ app_{idx}_end:"#,
         )?;
         println!("cargo:rerun-if-changed={}", abs.display());
     }
+
+    // ch5：`_app_names` —— 一串以 '\0' 结尾的 app 名字，顺序和 `_num_app` 一致。
+    // `sys_exec(path)` 要靠它把名字映射到内嵌的 ELF（对照 upstream 的 `_app_names`）。
+    writeln!(f, "\n    .section .rodata\n    .balign 8\n    .global _app_names\n_app_names:")?;
+    for app in &apps {
+        writeln!(f, "    .asciz \"{}\"", app)?;
+    }
     Ok(())
 }
