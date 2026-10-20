@@ -41,6 +41,7 @@ mod console;
 // ch2-C 的批处理：ch3 起不再参与调度，留着当对照（但不参与编译）
 mod comm_region;
 mod config;
+mod fs;
 mod gic;
 mod loader;
 mod mm;
@@ -83,11 +84,12 @@ pub extern "C" fn rust_main() -> ! {
     mm::init();
     mm::remap_test();
 
-    // ③ ch5 正式流程：进程（fork/exec/waitpid）+ 就绪队列调度
-    println!("[rc-aarch] stage 5: 进程（fork/exec/waitpid）on Jailhouse cell3");
+    // ③ ch6：把内嵌的 app 写进 RAM 磁盘上的 easy-fs，然后挂载
+    fs::init();
+    println!("[fs] 根目录: {:?}", fs::list_files());
 
-    // ④ 列出所有内嵌的 app（exec 只能跳到这些名字）
-    loader::list_apps();
+    // ④ ch6 正式流程：进程 + 文件系统
+    println!("[rc-aarch] stage 6: 进程 + 文件系统（RAM 磁盘 easy-fs）on Jailhouse cell3");
 
     // ⑤ 创建 pid=1 的 initproc，放进就绪队列
     task::add_initproc();

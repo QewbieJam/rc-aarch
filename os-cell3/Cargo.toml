@@ -3,8 +3,10 @@ name = "rc-aarch-os"
 version = "0.1.0"
 edition = "2024"
 
-# 阶段 1 不依赖任何 crate：UART 自己写，日志暂时不需要
+# ch6：文件系统。easy-fs 是我们自己仓库里的 crate（对照 upstream 的 easy-fs），
+# 不是第三方依赖；它自身也不引任何外部 crate。
 [dependencies]
+easy-fs = { path = "../easy-fs" }
 
 # 裸机必须 abort：否则需要 eh_personality 语言项
 [profile.dev]

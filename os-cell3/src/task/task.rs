@@ -16,10 +16,12 @@
 
 use super::pid::{KernelStack, PidHandle, pid_alloc};
 use super::TaskContext;
+use crate::fs::OSInode;
 use crate::mm::MemorySet;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::{Arc, Weak};
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
 
@@ -53,6 +55,8 @@ pub struct TaskControlBlockInner {
     pub children: Vec<Arc<TaskControlBlock>>,
     /// 退出码（Zombie 才有意义）
     pub exit_code: i32,
+    /// 打开的文件表（0=stdin 1=stdout 2=stderr 保留，从 3 开始是真实文件）
+    pub fd_table: Vec<Option<Arc<OSInode>>>,
 }
 
 impl TaskControlBlockInner {
@@ -65,6 +69,15 @@ impl TaskControlBlockInner {
     }
     pub fn is_zombie(&self) -> bool {
         self.task_status == TaskStatus::Zombie
+    }
+
+    /// 找一个空闲 fd（0/1/2 保留给标准输入输出）
+    pub fn alloc_fd(&mut self) -> usize {
+        if let Some(fd) = (3..self.fd_table.len()).find(|fd| self.fd_table[*fd].is_none()) {
+            return fd;
+        }
+        self.fd_table.push(None);
+        self.fd_table.len() - 1
     }
 }
 
@@ -98,6 +111,7 @@ impl TaskControlBlock {
                     parent: None,
                     children: Vec::new(),
                     exit_code: 0,
+                    fd_table: vec![None, None, None],
                 })
             },
         }
@@ -150,6 +164,8 @@ impl TaskControlBlock {
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
                     exit_code: 0,
+                    // ★ fork 继承父进程的文件描述符（共享同一个 OSInode，偏移也共享）
+                    fd_table: parent_inner.fd_table.clone(),
                 })
             },
         });

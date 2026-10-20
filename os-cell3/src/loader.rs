@@ -156,7 +156,27 @@ pub fn get_app_data_by_name(name: &str) -> Option<&'static [u8]> {
     None
 }
 
+/// 第 i 个 app 的名字（和 `get_app_data(i)` 对应）
+pub fn app_name(app_id: usize) -> &'static str {
+    let (_, num_app) = app_table();
+    assert!(app_id < num_app);
+    let mut p = _app_names as *const () as *const u8;
+    for i in 0..num_app {
+        let mut end = p;
+        while unsafe { end.read_volatile() } != 0 {
+            end = unsafe { end.add(1) };
+        }
+        if i == app_id {
+            let bytes = unsafe { core::slice::from_raw_parts(p, end as usize - p as usize) };
+            return core::str::from_utf8(bytes).unwrap();
+        }
+        p = unsafe { end.add(1) };
+    }
+    unreachable!()
+}
+
 /// 打印所有内嵌的 app 名字（对照 upstream 的 `list_apps`）
+#[allow(dead_code)]
 pub fn list_apps() {
     let (_, num_app) = app_table();
     let mut p = _app_names as *const () as *const u8;

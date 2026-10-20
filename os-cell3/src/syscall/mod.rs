@@ -16,8 +16,13 @@ mod process;
 pub use fs::*;
 pub use process::*;
 
+/// 对照 rCore 的 `const SYSCALL_READ: usize = 63;`
+pub const SYSCALL_READ: usize = 63;
 /// 对照 rCore 的 `const SYSCALL_WRITE: usize = 64;`
 pub const SYSCALL_WRITE: usize = 64;
+/// ch6：开/关文件（Linux open/close）
+pub const SYSCALL_OPEN: usize = 56;
+pub const SYSCALL_CLOSE: usize = 57;
 /// 对照 rCore 的 `const SYSCALL_EXIT: usize = 93;`
 pub const SYSCALL_EXIT: usize = 93;
 /// 对照 rCore 的 `const SYSCALL_YIELD: usize = 124;`（Linux sched_yield）
@@ -35,7 +40,10 @@ pub const SYSCALL_WAITPID: usize = 260;
 /// 分发（对照 rCore 的 `pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize`）
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
+        SYSCALL_READ => sys_read(args[0], args[1] as *const u8, args[2]),
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
+        SYSCALL_OPEN => sys_open(args[0] as *const u8, args[1] as u32),
+        SYSCALL_CLOSE => sys_close(args[0]),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
         SYSCALL_YIELD => sys_yield(),
         SYSCALL_GET_TIME => sys_get_time(),

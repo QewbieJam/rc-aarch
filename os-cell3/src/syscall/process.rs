@@ -11,7 +11,6 @@
 //! exec 的语义：把当前进程的地址空间整个换掉，从新 ELF 的入口重新开始跑。
 //! 注意它是"换汤不换药"—— pid、父子关系、内核栈都不变。
 
-use crate::loader::get_app_data_by_name;
 use crate::mm::{translated_refmut, translated_str};
 use crate::task::{
     add_task, current_task, current_user_token, exit_current_and_run_next,
@@ -66,13 +65,14 @@ pub fn sys_fork() -> isize {
 pub fn sys_exec(path: *const u8) -> isize {
     let token = current_user_token();
     let path = translated_str(token, path);
-    match get_app_data_by_name(path.as_str()) {
+    // ch6：exec 从**文件系统**里读 ELF（不再是内嵌的 `_app_names` 表）
+    match crate::fs::read_file_by_name(path.as_str()) {
         Some(data) => {
-            current_task().unwrap().exec(data);
+            current_task().unwrap().exec(&data);
             0
         }
         None => {
-            crate::println!("[kernel] exec: 找不到 app \"{}\"", path);
+            crate::println!("[kernel] exec: 文件系统里没有 \"{}\"", path);
             -1
         }
     }

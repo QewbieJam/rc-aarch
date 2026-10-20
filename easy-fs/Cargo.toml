@@ -1,0 +1,11 @@
+[package]
+name = "easy-fs"
+version = "0.1.0"
+edition = "2024"
+
+# 不引任何外部依赖（upstream 用了 spin + lazy_static，我们用 RefCell 风格的自旋锁替代，
+# 单核 + 内核态关中断，不需要真正的原子锁）
+[dependencies]
+
+[profile.release]
+panic = "abort"

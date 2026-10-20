@@ -50,6 +50,28 @@ fn clear_bss() {
 
 use syscall::*;
 
+// ---- ch6：打开标志（和 Linux/easy-fs 一致）----
+pub const O_RDONLY: u32 = 0;
+pub const O_WRONLY: u32 = 1;
+pub const O_RDWR: u32 = 2;
+pub const O_CREATE: u32 = 1 << 9;
+pub const O_TRUNC: u32 = 1 << 10;
+
+/// 读文件（对应 rCore 的 `pub fn read(fd: usize, buf: &mut [u8]) -> isize`）
+pub fn read(fd: usize, buf: &mut [u8]) -> isize {
+    sys_read(fd, buf)
+}
+
+/// 打开文件（path 必须以 '\0' 结尾）
+pub fn open(path: &str, flags: u32) -> isize {
+    sys_open(path, flags)
+}
+
+/// 关闭文件
+pub fn close(fd: usize) -> isize {
+    sys_close(fd)
+}
+
 /// 对应 rCore 的 `pub fn write(fd: usize, buf: &[u8]) -> isize`
 pub fn write(fd: usize, buf: &[u8]) -> isize {
     sys_write(fd, buf)
