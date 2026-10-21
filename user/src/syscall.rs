@@ -135,3 +135,66 @@ pub fn sys_sigprocmask(mask: u32) -> isize {
 pub fn sys_sigreturn() -> isize {
     syscall(SYSCALL_SIGRETURN, [0, 0, 0])
 }
+
+// ---- ch8：线程 + 同步 ----
+const SYSCALL_THREAD_CREATE: usize = 1000;
+const SYSCALL_GETTID: usize = 1001;
+const SYSCALL_WAITTID: usize = 1002;
+const SYSCALL_MUTEX_CREATE: usize = 1010;
+const SYSCALL_MUTEX_LOCK: usize = 1015;
+const SYSCALL_MUTEX_UNLOCK: usize = 1020;
+const SYSCALL_SEMAPHORE_CREATE: usize = 1030;
+const SYSCALL_SEMAPHORE_UP: usize = 1035;
+const SYSCALL_SEMAPHORE_DOWN: usize = 1040;
+const SYSCALL_CONDVAR_CREATE: usize = 1050;
+const SYSCALL_CONDVAR_SIGNAL: usize = 1055;
+const SYSCALL_CONDVAR_WAIT: usize = 1060;
+
+/// 新建线程：`entry(arg)`，用 `stack_top` 这块用户栈
+pub fn sys_thread_create(entry: usize, arg: usize, stack_top: usize) -> isize {
+    syscall(SYSCALL_THREAD_CREATE, [entry, arg, stack_top])
+}
+
+pub fn sys_gettid() -> isize {
+    syscall(SYSCALL_GETTID, [0, 0, 0])
+}
+
+pub fn sys_waittid(tid: usize) -> isize {
+    syscall(SYSCALL_WAITTID, [tid, 0, 0])
+}
+
+pub fn sys_mutex_create(blocking: bool) -> isize {
+    syscall(SYSCALL_MUTEX_CREATE, [blocking as usize, 0, 0])
+}
+
+pub fn sys_mutex_lock(id: usize) -> isize {
+    syscall(SYSCALL_MUTEX_LOCK, [id, 0, 0])
+}
+
+pub fn sys_mutex_unlock(id: usize) -> isize {
+    syscall(SYSCALL_MUTEX_UNLOCK, [id, 0, 0])
+}
+
+pub fn sys_semaphore_create(count: usize) -> isize {
+    syscall(SYSCALL_SEMAPHORE_CREATE, [count, 0, 0])
+}
+
+pub fn sys_semaphore_up(id: usize) -> isize {
+    syscall(SYSCALL_SEMAPHORE_UP, [id, 0, 0])
+}
+
+pub fn sys_semaphore_down(id: usize) -> isize {
+    syscall(SYSCALL_SEMAPHORE_DOWN, [id, 0, 0])
+}
+
+pub fn sys_condvar_create() -> isize {
+    syscall(SYSCALL_CONDVAR_CREATE, [0, 0, 0])
+}
+
+pub fn sys_condvar_signal(id: usize) -> isize {
+    syscall(SYSCALL_CONDVAR_SIGNAL, [id, 0, 0])
+}
+
+pub fn sys_condvar_wait(id: usize) -> isize {
+    syscall(SYSCALL_CONDVAR_WAIT, [id, 0, 0])
+}

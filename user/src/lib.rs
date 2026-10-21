@@ -238,3 +238,64 @@ pub fn waitpid(pid: usize, exit_code: &mut i32) -> isize {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// ch8：线程 + 同步
+// ---------------------------------------------------------------------------
+
+/// 在当前进程里新建一个线程：`entry(arg)`，用 `stack_top` 这块用户栈
+/// （`stack_top` 必须是 16 字节对齐的用户地址）
+pub fn thread_create(entry: usize, arg: usize, stack_top: usize) -> isize {
+    sys_thread_create(entry, arg, stack_top)
+}
+
+/// 当前线程号（主线程的 tid == 进程 pid）
+pub fn gettid() -> isize {
+    sys_gettid()
+}
+
+/// 等同一个进程里的另一个线程退出，返回它的退出码
+///
+/// 内核的 `waittid` 不阻塞（没退出返回 -2），所以这里循环 + `yield_()`
+/// （和 `waitpid` 的写法一致）。
+pub fn waittid(tid: usize) -> isize {
+    loop {
+        match sys_waittid(tid) {
+            -2 => { yield_(); }
+            code => return code,
+        }
+    }
+}
+
+/// 创建互斥锁；`blocking = false` 时拿不到会立刻返回 -1
+pub fn mutex_create(blocking: bool) -> isize {
+    sys_mutex_create(blocking)
+}
+pub fn mutex_lock(id: usize) -> isize {
+    sys_mutex_lock(id)
+}
+pub fn mutex_unlock(id: usize) -> isize {
+    sys_mutex_unlock(id)
+}
+
+/// 创建信号量（初值 count）
+pub fn semaphore_create(count: usize) -> isize {
+    sys_semaphore_create(count)
+}
+pub fn semaphore_up(id: usize) -> isize {
+    sys_semaphore_up(id)
+}
+pub fn semaphore_down(id: usize) -> isize {
+    sys_semaphore_down(id)
+}
+
+/// 创建条件变量
+pub fn condvar_create() -> isize {
+    sys_condvar_create()
+}
+pub fn condvar_signal(id: usize) -> isize {
+    sys_condvar_signal(id)
+}
+pub fn condvar_wait(id: usize) -> isize {
+    sys_condvar_wait(id)
+}

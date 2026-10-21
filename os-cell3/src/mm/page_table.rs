@@ -400,6 +400,7 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
                 ttbr0 & 0x0000_ffff_ffff_f000,
                 crate::task::current_task()
                     .unwrap()
+                    .process()
                     .inner_exclusive_access()
                     .memory_set
                     .token()
@@ -420,6 +421,7 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
                 "[mm] 当前任务 areas: {}",
                 crate::task::current_task()
                     .unwrap()
+                    .process()
                     .inner_exclusive_access()
                     .memory_set
                     .debug_areas()

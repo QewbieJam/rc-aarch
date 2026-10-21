@@ -1,9 +1,9 @@
-//! 任务/进程管理（ch5）—— 对照 rCore ch5 的 `os/src/task/mod.rs`
+//! 任务/进程管理（ch5/ch8）—— 对照 rCore ch8 的 `os/src/task/mod.rs`
 //!
 //! ch5 的模块划分（和 upstream 一一对应）：
 //!   task/context.rs    TaskContext（不变）
 //!   task/switch.S/.rs  __switch（不变）
-//!   task/task.rs       TaskControlBlock（Arc + inner）
+//!   task/task.rs       ProcessControlBlock + TaskControlBlock（ch8 拆开）
 //!   task/pid.rs        pid 分配 + 内核栈
 //!   task/manager.rs    就绪队列（FIFO）
 //!   task/processor.rs  Processor + run_tasks + schedule
@@ -29,11 +29,13 @@ mod task;
 use crate::loader::get_app_data_by_name;
 use crate::sync::UPSafeCell;
 use alloc::sync::Arc;
-use task::{TaskControlBlock, TaskStatus};
+pub use task::{ProcessControlBlock, TaskControlBlock, TaskStatus};
 
 pub use action::SignalAction;
 pub use context::TaskContext;
-pub use manager::{add_task, pid2task, remove_from_pid2task};
+pub use manager::{
+    add_task, pid2process, register_process, remove_from_pid2process, wakeup_task,
+};
 pub use signal::{MAX_SIG, SignalFlags};
 pub use processor::{
     current_task, current_task_id, current_trap_cx, current_user_token, run_tasks, schedule,
@@ -57,9 +59,9 @@ pub fn initproc() -> Arc<TaskControlBlock> {
 
 /// 创建 initproc 并放进就绪队列（对照 upstream 的 `add_initproc`）
 pub fn add_initproc() {
-    let initproc = Arc::new(TaskControlBlock::new(
+    let initproc = TaskControlBlock::new(
         get_app_data_by_name("initproc").expect("找不到 initproc 这个 app"),
-    ));
+    );
     *INITPROC.exclusive_access() = Some(initproc.clone());
     add_task(initproc);
     // initproc 的代码是刚加载的（新物理页），同步一次 I-cache
@@ -78,51 +80,61 @@ pub fn suspend_current_and_run_next() {
     schedule(task_cx_ptr);
 }
 
+/// 阻塞当前线程：从调度器里摘掉、**不**放回就绪队列，等 `wakeup_task` 再唤醒
+///
+/// 和 `suspend_current_and_run_next` 的区别：
+///   - suspend  = yield（自己回就绪队列，回来继续跑）；
+///   - block    = sleep（只有 wakeup 才回来）。
+/// 互斥锁/信号量/条件变量等"等一个资源"必须用 block，否则等待者会立刻
+/// 又被调度上来、越过阻塞点继续跑（ch8 调试时踩过：semaphore_down 没拦住）。
+pub fn block_current_and_run_next() {
+    let task = take_current_task().expect("没有正在运行的线程");
+    let task_cx_ptr = {
+        let mut inner = task.inner_exclusive_access();
+        inner.task_status = TaskStatus::Ready;
+        &mut inner.task_cx as *mut TaskContext
+    };
+    schedule(task_cx_ptr);
+}
+
 /// 退出当前进程：Running → Zombie，记录退出码，切回调度器
 ///
 /// 返回类型是 `!`：Zombie 永远不会再被调度，所以这个函数不会返回。
 pub fn exit_current_and_run_next(exit_code: i32) -> ! {
-    let task = take_current_task().expect("没有正在运行的进程");
-    let pid = task.getpid();
-    // ch7：从 pid→TCB 表里摘掉（kill(pid) 之后再也找不到它）
-    remove_from_pid2task(pid);
-
-    // ★ initproc 退出 = 系统该关了（对应 upstream 的 IDLE_PID 判断）
-    if pid == IDLE_PID {
-        println!("[kernel] initproc 退出，exit_code={}，系统停机", exit_code);
-        crate::trap::shutdown_with(exit_code);
-    }
-
-    let mut inner = task.inner_exclusive_access();
-    inner.task_status = TaskStatus::Zombie;
-    inner.exit_code = exit_code;
-
-    // 孤儿进程托付给 initproc（对照 upstream 的 reparent 逻辑）
+    let task = take_current_task().expect("没有正在运行的线程");
+    let process = task.process();
+    let pid = process.getpid();
+    // 标记当前线程为 Zombie，记下退出码（waittid 用）
     {
-        let init = initproc();
-        let mut init_inner = init.inner_exclusive_access();
-        for child in inner.children.iter() {
-            child.inner_exclusive_access().parent = Some(Arc::downgrade(&init));
-            init_inner.children.push(child.clone());
-        }
+        let mut inner = task.inner_exclusive_access();
+        inner.task_status = TaskStatus::Zombie;
+        inner.exit_code = exit_code;
     }
-    inner.children.clear();
-    // 用户页帧马上还回去（页表留着，等 waitpid 回收 TCB 时一起释放）
-    inner.memory_set.recycle_data_pages();
-    drop(inner);
-    // 手动 drop：如果父进程已经不管我们了，这里就是最后一个 Arc
+
+    // 主线程退出 = 整个进程退出（同进程的其他线程一并变 Zombie）
+    if task.tid == pid {
+        // ★ initproc 退出 = 系统该关了（对应 upstream 的 IDLE_PID 判断）
+        if pid == IDLE_PID {
+            println!("[kernel] initproc 退出，exit_code={}，系统停机", exit_code);
+            crate::trap::shutdown_with(exit_code);
+        }
+        remove_from_pid2process(pid);
+        process.exit(exit_code);
+        drop(process);
+    }
     drop(task);
 
     // 不再保存上下文，直接切回调度器
     let mut _unused = TaskContext::zero_init();
     schedule(&mut _unused as *mut TaskContext);
-    panic!("Zombie 进程不应该被再次调度");
+    panic!("Zombie 线程不应该被再次调度");
 }
 
 /// sbrk：改当前进程的 program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
-    let task = current_task().expect("没有正在运行的进程");
-    let mut inner = task.inner_exclusive_access();
+    let task = current_task().expect("没有正在运行的线程");
+    let process = task.process();
+    let mut inner = process.inner_exclusive_access();
     let old_break = inner.program_brk;
     let new_brk = inner.program_brk as isize + size as isize;
     if new_brk < inner.heap_bottom as isize {

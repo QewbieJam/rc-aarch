@@ -12,9 +12,11 @@
 
 mod fs;
 mod process;
+mod sync;
 
 pub use fs::*;
 pub use process::*;
+pub use sync::*;
 
 /// 对照 rCore 的 `const SYSCALL_READ: usize = 63;`
 pub const SYSCALL_READ: usize = 63;
@@ -45,6 +47,20 @@ pub const SYSCALL_FORK: usize = 220;
 pub const SYSCALL_EXEC: usize = 221;
 pub const SYSCALL_WAITPID: usize = 260;
 
+// ---- ch8：线程 + 同步（编号沿用 upstream ch8）----
+pub const SYSCALL_THREAD_CREATE: usize = 1000;
+pub const SYSCALL_GETTID: usize = 1001;
+pub const SYSCALL_WAITTID: usize = 1002;
+pub const SYSCALL_MUTEX_CREATE: usize = 1010;
+pub const SYSCALL_MUTEX_LOCK: usize = 1015;
+pub const SYSCALL_MUTEX_UNLOCK: usize = 1020;
+pub const SYSCALL_SEMAPHORE_CREATE: usize = 1030;
+pub const SYSCALL_SEMAPHORE_UP: usize = 1035;
+pub const SYSCALL_SEMAPHORE_DOWN: usize = 1040;
+pub const SYSCALL_CONDVAR_CREATE: usize = 1050;
+pub const SYSCALL_CONDVAR_SIGNAL: usize = 1055;
+pub const SYSCALL_CONDVAR_WAIT: usize = 1060;
+
 /// 分发（对照 rCore 的 `pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize`）
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
@@ -70,6 +86,20 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_FORK => sys_fork(),
         SYSCALL_EXEC => sys_exec(args[0] as *const u8, args[1] as *const usize),
         SYSCALL_WAITPID => sys_waitpid(args[0] as isize, args[1] as *mut i32),
+        // ch8：线程
+        SYSCALL_THREAD_CREATE => sys_thread_create(args[0], args[1], args[2]),
+        SYSCALL_GETTID => sys_gettid(),
+        SYSCALL_WAITTID => sys_waittid(args[0]),
+        // ch8：同步
+        SYSCALL_MUTEX_CREATE => sys_mutex_create(args[0] != 0),
+        SYSCALL_MUTEX_LOCK => sys_mutex_lock(args[0]),
+        SYSCALL_MUTEX_UNLOCK => sys_mutex_unlock(args[0]),
+        SYSCALL_SEMAPHORE_CREATE => sys_semaphore_create(args[0]),
+        SYSCALL_SEMAPHORE_UP => sys_semaphore_up(args[0]),
+        SYSCALL_SEMAPHORE_DOWN => sys_semaphore_down(args[0]),
+        SYSCALL_CONDVAR_CREATE => sys_condvar_create(args[0]),
+        SYSCALL_CONDVAR_SIGNAL => sys_condvar_signal(args[0]),
+        SYSCALL_CONDVAR_WAIT => sys_condvar_wait(args[0]),
         _ => {
             crate::println!("[syscall] 不支持的调用号: {}", syscall_id);
             -1

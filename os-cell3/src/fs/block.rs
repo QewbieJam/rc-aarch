@@ -8,7 +8,7 @@ use alloc::sync::Arc;
 use easy_fs::BlockDevice;
 
 /// 磁盘大小（块数），1MB
-pub const DISK_BLOCKS: usize = 2048;
+pub const DISK_BLOCKS: usize = 4096; // 2MB：ch8 起 app 变多（线程/同步测试），1MB 装不下了
 const DISK_PAGES: usize = DISK_BLOCKS * easy_fs::BLOCK_SZ / 4096;
 
 pub struct RamDisk {

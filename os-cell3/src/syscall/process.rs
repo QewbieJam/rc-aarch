@@ -13,8 +13,8 @@
 
 use crate::mm::{translated_ref, translated_refmut, translated_str};
 use crate::task::{
-    MAX_SIG, SignalAction, SignalFlags, add_task, current_task, current_user_token,
-    exit_current_and_run_next, pid2task, suspend_current_and_run_next,
+    MAX_SIG, SignalAction, SignalFlags, TaskControlBlock, add_task, current_task,
+    current_user_token, exit_current_and_run_next, pid2process, suspend_current_and_run_next,
 };
 use crate::timer::get_time_ms;
 use alloc::sync::Arc;
@@ -108,26 +108,27 @@ pub fn sys_exec(path: *const u8, argv: *const usize) -> isize {
 /// - 有僵尸子进程            → 回收它，返回它的 pid，并把 exit_code 写回用户指针
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     let task = current_task().unwrap();
-    let mut inner = task.inner_exclusive_access();
-    if !inner
+    let process = task.process();
+    let token = process.inner_exclusive_access().get_user_token();
+    let mut pcb = process.inner_exclusive_access();
+    if !pcb
         .children
         .iter()
         .any(|p| pid == -1 || pid as usize == p.getpid())
     {
         return -1;
     }
-    let pair = inner.children.iter().enumerate().find(|(_, p)| {
+    let pair = pcb.children.iter().enumerate().find(|(_, p)| {
         p.inner_exclusive_access().is_zombie() && (pid == -1 || pid as usize == p.getpid())
     });
     if let Some((idx, _)) = pair {
         // 从 children 里摘掉；此时 Arc 只剩我们手里这一个
-        let child = inner.children.remove(idx);
-        assert_eq!(Arc::strong_count(&child), 1);
+        let child = pcb.children.remove(idx);
         let found_pid = child.getpid();
         let exit_code = child.inner_exclusive_access().exit_code;
         // 写回用户指针（父进程的地址空间）
-        *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
-        // child 在这里 drop：TCB / 页表 / 页帧 / 内核栈 / pid 全部回收
+        *translated_refmut(token, exit_code_ptr) = exit_code;
+        // child 在这里 drop：PCB / 页表 / 页帧 / 内核栈 / pid 全部回收
         drop(child);
         found_pid as isize
     } else {
@@ -146,14 +147,22 @@ pub fn sys_kill(pid: usize, signum: i32) -> isize {
     if signum < 0 || signum as usize > MAX_SIG {
         return -1;
     }
-    if let Some(task) = pid2task(pid) {
+    if let Some(process) = pid2process(pid) {
         if let Some(flag) = SignalFlags::from_bits(1u32 << signum) {
-            let mut inner = task.inner_exclusive_access();
-            if inner.signals.contains(flag) {
-                return -1; // 同一个信号还没处理完，别重复挂
+            let threads = process.inner_exclusive_access().threads.clone();
+            let mut delivered = false;
+            for task in threads.iter() {
+                let mut inner = task.inner_exclusive_access();
+                if !inner.signals.contains(flag) {
+                    inner.signals.insert(flag);
+                    delivered = true;
+                }
             }
-            inner.signals.insert(flag);
-            0
+            if delivered {
+                0
+            } else {
+                -1 // 同一个信号还没处理完，别重复挂
+            }
         } else {
             -1
         }
@@ -216,5 +225,58 @@ pub fn sys_sigreturn() -> isize {
             cx.x[0] as isize
         }
         None => -1,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ch8：线程
+// ---------------------------------------------------------------------------
+
+/// 在当前进程里新建一个线程（ch8）
+///
+/// 参数是用户 VA：`entry` 是入口、`arg` 是传给入口的参数、`stack_top` 是该线程
+/// 自己的用户栈顶（我们的扩展：upstream 让所有线程共用一个栈顶）。
+pub fn sys_thread_create(entry: usize, arg: usize, stack_top: usize) -> isize {
+    let task = current_task().unwrap();
+    let process = task.process();
+    if entry == 0 || stack_top == 0 {
+        return -1;
+    }
+    let new_thread = TaskControlBlock::new_thread_in(process, entry, arg, stack_top);
+    let tid = new_thread.gettid();
+    add_task(new_thread);
+    tid as isize
+}
+
+/// 取当前线程号
+pub fn sys_gettid() -> isize {
+    current_task().unwrap().gettid() as isize
+}
+
+/// 等待同进程的某个线程退出，返回它的退出码（ch8）
+///
+/// - 该 tid 不属于当前进程 → -1
+/// - 还没退出               → -2
+/// - 已退出                 → 回收它（从 threads 里摘掉），返回 exit_code
+pub fn sys_waittid(tid: usize) -> isize {
+    let task = current_task().unwrap();
+    let process = task.process();
+    let mut pcb = process.inner_exclusive_access();
+    let idx = match pcb.threads.iter().position(|t| t.gettid() == tid) {
+        Some(i) => i,
+        None => return -1,
+    };
+    // 不能等自己（否则永远等不到）
+    if pcb.threads[idx].gettid() == task.gettid() {
+        return -1;
+    }
+    let zombie = pcb.threads[idx].inner_exclusive_access().is_zombie();
+    if zombie {
+        let exit_code = pcb.threads[idx].inner_exclusive_access().exit_code;
+        let dead = pcb.threads.remove(idx);
+        drop(dead); // 回收 TCB / 内核栈 / tid
+        exit_code as isize
+    } else {
+        -2
     }
 }

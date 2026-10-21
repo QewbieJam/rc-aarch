@@ -56,14 +56,14 @@ pub fn run_tasks() -> ! {
         let mut processor = PROCESSOR.exclusive_access();
         if let Some(task) = fetch_task() {
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
-            let asid = task.asid;
             // 访问即将运行的任务
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
-            // ★ 换地址空间（TTBR0）—— 就在切过去之前做
-            task_inner.memory_set.activate(asid);
             drop(task_inner);
+            // ★ 换地址空间（TTBR0）—— 就在切过去之前做（ch8：地址空间属于进程，
+            //   同一个进程的线程共享，所以每次切过去都重新 activate 一次最稳）
+            task.activate();
             processor.current = Some(task);
             drop(processor);
             unsafe {
@@ -88,12 +88,9 @@ pub fn current_task_id() -> usize {
     current_task().map(|t| t.getpid()).unwrap_or(0)
 }
 
-/// 当前任务的页表 token
+/// 当前任务的页表 token（ch8：token 在进程里）
 pub fn current_user_token() -> usize {
-    current_task()
-        .unwrap()
-        .inner_exclusive_access()
-        .get_user_token()
+    current_task().unwrap().user_token()
 }
 
 /// 当前任务的 TrapContext（在内核栈顶）
