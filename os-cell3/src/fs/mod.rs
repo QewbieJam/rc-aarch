@@ -28,6 +28,8 @@ pub trait File: Send + Sync {
 }
 
 #[allow(unused_imports)]
+pub use block::{cache_stats, cache_sync_all};
+#[allow(unused_imports)]
 pub use inode::{
     OSInode, OpenFlags, file_size, list_files, open_file, read_file_by_name, read_file_to,
     root_inode,
@@ -39,9 +41,10 @@ pub use stdio::{Stdin, Stdout};
 /// 造盘 → 格式化 → 把内嵌 app 写成文件 → 重新 open 自检 → 设为根目录
 pub fn init() {
     let disk = block::make_disk();
+    let disk_dev: Arc<dyn easy_fs::BlockDevice> = disk.clone();
 
     // 格式化 + 写入文件
-    let efs = EasyFileSystem::create(disk.clone(), block::DISK_BLOCKS as u32, 1);
+    let efs = EasyFileSystem::create(disk_dev.clone(), block::DISK_BLOCKS as u32, 1);
     let root = EasyFileSystem::root_inode(&efs);
 
     let num_app = crate::loader::get_num_app();
@@ -60,7 +63,8 @@ pub fn init() {
     hello.write_at(0, b"hello from easy-fs on rc-aarch!\n");
 
     // 重新 open 一遍（验证超级块/位图/目录都真的落到盘上了）
-    let efs2 = EasyFileSystem::open(disk.clone());
+    block::cache_sync_all();
+    let efs2 = EasyFileSystem::open(disk_dev.clone());
     let root2 = EasyFileSystem::root_inode(&efs2);
     inode::set_root(Arc::new(root2));
     crate::println!("[fs] 挂载成功，根目录: {:?}", list_files());

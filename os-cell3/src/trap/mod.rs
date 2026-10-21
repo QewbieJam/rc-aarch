@@ -462,6 +462,16 @@ pub fn shutdown_with(exit_code: i32) -> ! {
         heap_max / 1024,
         heap_blocks
     );
+    let (hits, misses, writes, evictions) = crate::fs::cache_stats();
+    crate::println!(
+        "[kernel]           块缓存：命中 {} / 未命中 {} / 写 {} / 写回 {}（命中率 {}%）",
+        hits,
+        misses,
+        writes,
+        evictions,
+        if hits + misses == 0 { 0 } else { hits * 100 / (hits + misses) }
+    );
+    crate::fs::cache_sync_all();
     infinite_loop()
 }
 

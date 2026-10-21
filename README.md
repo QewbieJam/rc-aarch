@@ -2,15 +2,16 @@
 
 > **一句话：rCore 是"教材"，Jailhouse/MCS 是"战场"——把 rCore 各章用 AArch64 重写一遍，你就同时拿到了 Rust 系统编程能力和 MCS 项目的真实产出。**
 >
-> 创建：2026-09-18 ｜ 状态：**ch1 ~ ch8（线程 + 同步）在树莓派 4B / openEuler MCS / Jailhouse cell3 上跑通**
+> 创建：2026-09-18 ｜ 状态：**ch1 ~ ch9（线程/同步 + 块缓存）在树莓派 4B / openEuler MCS / Jailhouse cell3 上跑通**
 >
 > 进度：ch1 裸机 hello ｜ ch2 陷入+系统调用+批处理 ｜ ch3 任务切换+时间片 ｜
 > ch4 地址空间+分页 ｜ ch5 进程（fork/exec/waitpid） ｜ ch6 文件系统（easy-fs + RAM 磁盘） ｜
 > ch7 进程间通信（管道 pipe/dup + 信号 kill/sigaction/sigreturn）｜
-> ch8 线程 + 同步（mutex/semaphore/condvar）+ 共享内存 stdin/stdout + user_shell
+> ch8 线程 + 同步（mutex/semaphore/condvar）+ 共享内存 stdin/stdout + user_shell ｜
+> ch9 文件系统优化（块缓存 + 命中率统计）
 >
 > 分支 `ch7+`：内核堆换成空闲链表分配器（可回收）；修复 exec 的 I-cache 失效；
-> ivshmem 共享内存控制台（stdin/stdout + user_shell）；ch8 线程与同步
+> ivshmem 共享内存控制台（stdin/stdout + user_shell）；ch8 线程与同步；ch9 块缓存
 
 ---
 
