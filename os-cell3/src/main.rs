@@ -90,6 +90,11 @@ pub extern "C" fn rust_main() -> ! {
 
     // ④ ch6 正式流程：进程 + 文件系统
     println!("[rc-aarch] stage 6: 进程 + 文件系统（RAM 磁盘 easy-fs）on Jailhouse cell3");
+    {
+        let cpacr: usize;
+        unsafe { core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr) };
+        println!("[fpu] CPACR_EL1={:#x} FPEN={}", cpacr, (cpacr >> 20) & 0b11);
+    }
 
     // ⑤ 创建 pid=1 的 initproc，放进就绪队列
     task::add_initproc();
