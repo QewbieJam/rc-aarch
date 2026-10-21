@@ -7,6 +7,9 @@
 #   RELOAD=1 ROOTCELL=root@192.168.31.75 scripts/deploy-cell3.sh
 #   只 scp 新 ELF，然后 cell shutdown → load → start，**不 destroy**。
 #
+# ★ 板子 IP 变了（DHCP 重新分配）：./scripts/find-board.sh 按 MAC 扫网段找它；
+#   注意脚本只编 .cell 配置、**不会** cargo build 内核，改完内核记得先 build。
+#
 #   为什么日常不用 destroy：实测（见 docs/02 的"三个坑"）destroy 会把 CPU3
 #   还给 root cell，Linux 热插拔 CPU3 时在 secondary_start_kernel/el1_irq 里
 #   吃 SError → Kernel panic → 整板失联，只能断电。
