@@ -546,3 +546,100 @@ RELOAD=1 ROOTCELL=root@192.168.31.75 scripts/deploy-cell3.sh
 
 > 提示：目前 root 侧的 `ivshm0` 网络（ivshmem-net）被我们解绑了；如果之后还要用它，
 > 记得 `echo 0001:00:00.0 > .../ivshmem-net/bind` 绑回去（两个驱动只能二选一）。
+
+---
+
+## 十四、ch7+ phase 2：把 stdin/stdout 接到共享内存上，跑起 `user_shell`
+
+phase 1 证明"通道能收发字节"；phase 2 把它接到 `File` 层，于是 ch7 的
+`Stdin`/`Stdout` 和 ch5 的 `fork/exec/waitpid` 第一次真正串起来跑了一个交互 shell。
+
+### 14.1 验收结果（2026-10-22）
+
+root 侧守护进程把一段脚本行喂进 guest：
+
+```
+>> 可用命令（easy-fs 根目录里的 app）：
+  cat_filea        读 hello.txt
+  ...
+>> [cmdline] argc = 3
+[cmdline] argv[1] = a
+[cmdline] argv[2] = b
+>> [cat] hello.txt 共 32 字节：
+hello from easy-fs on rc-aarch!
+[cat] 结束
+>> [shell] bye
+[initproc] 所有子进程回收完毕，退出
+[kernel] shutdown：initproc exit_code=0；页帧 7682/7975 空闲
+```
+
+既有 app 全过（pipe_large 382468、simd_test、sig_test、argv、forktest），
+最后 `user_shell` 读 stdin 阻塞等命令，`exit` 后整条链（shell → initproc → 停机）正常收尾。
+
+### 14.2 内核侧改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `fs/stdio.rs` | `Stdin::read` 从 `ivshmem::recv` 读；没数据就 `suspend_current_and_run_next()`，和 ch7 的 pipe 读端同一套阻塞模型。`Stdout::write` **同时**写 UART 和共享内存 TX 段（tee：串口验收和控制台会话两不误）|
+| `ivshmem.rs` | phase 1 的 IRQ 临时消费者删掉，RX 由 `Stdin` 真正消费 |
+| `trap/mod.rs` | tick 日志只打第 1 次（长跑 cell 里每 100 次刷屏会让部署脚本永远等不到 idle）|
+
+### 14.3 用户侧：`user/src/bin/user_shell.rs`
+
+```
+>> 提示符 → read(0) 按字节读一行 → 按空格切词（原地写 '\0'）→
+   fork → 子进程 exec(命令, argv) → 父进程 waitpid → 下一轮
+```
+- `help` 列出 easy-fs 里的 app；`exit` 退出；
+- 没有堆：行缓冲 `[u8; 257]`、参数 `[&str; 8]` 都是固定大小；
+- 切词分两遍（先原地改 `line` 记区间、再借 `&str`），否则借用冲突（E0506）。
+
+### 14.4 root 侧：`ivshm-console -i`
+
+交互模式：`poll(stdin)` → 有输入就 `tx_write` 进 guest 的 RX；同时把 guest TX 读出来写
+stdout。这样 `ssh -tt root@板子 /root/ivshm-console -i -d 60` 就是一个真终端；
+非交互测试直接 `printf "...\nexit\n" | ivshm-console -i -d 60`。
+
+### 14.5 这一阶段踩的坑
+
+**`Stdin` 读多了会丢数据**：最初实现是"先往 128 字节临时缓冲收，再拷给用户缓冲"。
+shell 的 `read_line` 一次只读 1 字节，于是内核一次把环里 27 字节全吃进临时缓冲、
+只拷 1 字节给用户，剩下 26 字节**直接丢了**（表现：shell 收到半行后永远阻塞）。
+修法：临时缓冲只收到 `min(用户缓冲长度, 128)` 为止，一个字节都不多拿。
+
+> 教训：`read(fd, buf, len)` 的语义是"最多写 len 字节"，内核内部做缓冲时
+> **不能先多读再截断**——多读的数据对用户不可见，等于丢失。
+
+### 14.6 文件清单（phase 2）
+
+| 文件 | 作用 |
+|---|---|
+| `os-cell3/src/fs/stdio.rs` | Stdin 接 ivshmem（阻塞读）；Stdout tee 到 UART + ivshmem |
+| `os-cell3/src/ivshmem.rs` | 去掉 phase 1 的 IRQ 消费者 |
+| `os-cell3/src/trap/mod.rs` | tick 日志静音 |
+| `user/src/bin/user_shell.rs` | **新**：交互 shell（提示符/切词/fork/exec/waitpid）|
+| `user/src/bin/initproc.rs` | app 列表最后加 `user_shell` |
+| `tools/ivshm-console.c` | `-i` 交互模式（stdin → guest，guest 输出 → stdout）|
+
+### 14.7 怎么复现
+
+```sh
+cd ~/rc-aarch
+# 1) 起 root 侧守护进程，喂一串命令
+ROOTCELL=root@192.168.31.75 ./scripts/setup-ivshm-uio.sh
+aarch64-linux-gnu-gcc -O2 -static -o /tmp/ivshm-console tools/ivshm-console.c
+scp /tmp/ivshm-console root@192.168.31.75:/root/ivshm-console
+ssh root@192.168.31.75 'chmod +x /root/ivshm-console; \
+  setsid nohup sh -c "printf \"help\ncmdline_args a b\ncat_filea\nexit\n\" | \
+  /root/ivshm-console -i -d 60" > /root/shell.out 2>/root/shell.err < /dev/null &'
+# 2) 部署（RELOAD），3 秒后看 /root/shell.out
+RELOAD=1 ROOTCELL=root@192.168.31.75 ./scripts/deploy-cell3.sh
+```
+
+### 14.8 下一步（ch8 前的地基已经齐了）
+
+- `ch7+` 到此：堆分配器、共享内存通道、stdin/stdout、user_shell 都有了；
+- ch8 要的是**线程 + 同步原语**（mutex/condvar/semaphore）：分配器已经支持反复
+  创建/销毁，`suspend_current_and_run_next` 的阻塞模型也已经验证过，可以直接往上加
+  `wait/wake` 队列；
+- 顺带可做：panic/退出时把控制权交回 shell（现在 `exit` 是 shell 的最后一个命令）。

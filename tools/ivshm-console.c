@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <poll.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -181,6 +182,7 @@ int main(int argc, char **argv)
 	const char *send_text = NULL;
 	double duration = 3.0;
 	int rounds = 1;
+	int interactive = 0;
 	size_t in_sz, out_sz;
 	uint8_t buf[4096];
 	double start, deadline;
@@ -193,6 +195,8 @@ int main(int argc, char **argv)
 			duration = atof(argv[++i]);
 		else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc)
 			rounds = atoi(argv[++i]);
+		else if (strcmp(argv[i], "-i") == 0)
+			interactive = 1;
 		else {
 			fprintf(stderr, "用法: %s [-s 文本] [-d 秒]\n", argv[0]);
 			return 2;
@@ -318,6 +322,40 @@ int main(int argc, char **argv)
 	}
 
 	deadline = now_sec() + duration;
+	if (interactive) {
+		/* phase 2：把本进程的 stdin 转发进 guest，把 guest 的输出打到 stdout */
+		int stdin_open = 1;
+
+		fprintf(stderr, "[ivshm] 交互模式：stdin → guest，guest 输出 → stdout\n");
+		while (now_sec() < deadline) {
+			struct pollfd pfd = {.fd = 0, .events = POLLIN};
+			uint8_t ibuf[512];
+			int pr = poll(&pfd, 1, 10);
+			size_t n;
+
+			if (stdin_open && pr > 0 &&
+			    (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+				ssize_t r = read(0, ibuf, sizeof(ibuf));
+
+				if (r > 0) {
+					size_t w = tx_write(root_tx, guest_tx, ibuf,
+							    (size_t)r);
+					fprintf(stderr,
+						"[ivshm] stdin→guest 转发 %zu/%zd 字节\n",
+						w, r);
+				}
+				else if (r == 0)
+					stdin_open = 0;
+			}
+			n = rx_read(guest_tx, root_tx, ibuf, sizeof(ibuf));
+			if (n > 0) {
+				fwrite(ibuf, 1, n, stdout);
+				fflush(stdout);
+			}
+		}
+		close(fd);
+		return 0;
+	}
 	while (now_sec() < deadline) {
 		size_t n = rx_read(guest_tx, root_tx, buf, sizeof(buf));
 

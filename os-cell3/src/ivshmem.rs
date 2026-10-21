@@ -167,29 +167,3 @@ pub fn recv(buf: &mut [u8]) -> usize {
         n
     }
 }
-
-/// phase 1 的临时"消费者"：把 RX 里收到的字节直接打到 UART 控制台。
-///
-/// 在定时器 IRQ 里调用（100Hz），所以不需要额外的轮询线程。
-pub fn poll_rx_to_console() {
-    let mut buf = [0u8; 128];
-    let mut first = true;
-    loop {
-        let n = recv(&mut buf);
-        if n == 0 {
-            break;
-        }
-        if first {
-            crate::console::print_str("[shm] root→guest: ");
-            first = false;
-        }
-        for &b in &buf[..n] {
-            crate::console::uart_putc(b);
-        }
-        // phase 1 自检：收到什么就回显什么（root 侧据此做 round-trip 校验）
-        send(&buf[..n]);
-    }
-    if !first {
-        crate::console::uart_putc(b'\n');
-    }
-}
