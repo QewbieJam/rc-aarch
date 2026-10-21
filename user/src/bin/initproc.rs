@@ -11,25 +11,27 @@ extern crate user_lib;
 
 use user_lib::{exec, exit, fork, getpid, waitpid};
 
-/// 依次跑三个 app：文件读写、cat 文件、进程全家桶
-const APPS: [&str; 6] = [
-    "filetest_simple\0",
-    "cat_filea\0",
-    "pipetest\0",
-    "pipe_large_test\0",
-    "sig_test\0",
-    "forktest\0",
+/// 依次跑这些 app（名字, 命令行参数）；ch7 起 exec 支持 argv
+// ★ argv 的每个字符串都必须以 '\0' 结尾：内核按 C 字符串读（和 upstream 一样）
+const APPS: [(&str, &[&str]); 7] = [
+    ("filetest_simple\0", &["filetest_simple\0"]),
+    ("cat_filea\0", &["cat_filea\0"]),
+    ("pipetest\0", &["pipetest\0"]),
+    ("pipe_large_test\0", &["pipe_large_test\0"]),
+    ("sig_test\0", &["sig_test\0"]),
+    ("cmdline_args\0", &["cmdline_args\0", "hello\0", "argv\0"]),
+    ("forktest\0", &["forktest\0"]),
 ];
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     println!("[initproc] pid={} 启动（exec 的 ELF 来自 easy-fs）", getpid());
 
-    for app in APPS.iter() {
+    for (app, args) in APPS.iter() {
         let pid = fork();
         if pid == 0 {
             println!("[initproc] 子进程 exec {}", app);
-            exec(app);
+            exec(app, args);
             println!("[initproc] exec {} 失败！", app);
             exit(-1);
         }

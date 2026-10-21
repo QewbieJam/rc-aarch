@@ -109,11 +109,11 @@ impl TaskControlBlock {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
         let pid = pid_alloc();
         let kernel_stack = KernelStack::new();
-        // 在内核栈顶压初始 TrapContext
-        let trap_cx_ptr = kernel_stack.push_on_top(TrapContext::app_init_context(
-            entry_point,
-            user_sp,
-        ));
+        // 在内核栈顶压初始 TrapContext（initproc 不需要命令行参数）
+        let mut cx = TrapContext::app_init_context(entry_point, user_sp);
+        cx.x[0] = 0; // argc
+        cx.x[1] = 0; // argv
+        let trap_cx_ptr = kernel_stack.push_on_top(cx);
         Self {
             asid: Self::asid_of(pid.0),
             pid,
@@ -152,15 +152,64 @@ impl TaskControlBlock {
         (pid & 0xff) as u16
     }
 
-    /// 换成另一个 ELF（对照 upstream 的 `exec`）
-    pub fn exec(&self, elf_data: &[u8]) {
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+    /// 换成另一个 ELF 并传入命令行参数（对照 upstream ch7 的 `exec(elf_data, args)`）
+    ///
+    /// 参数压栈布局（和 upstream 一致，栈从高往低长）：
+    /// ```text
+    ///   [高]  argv[argc]  = NULL
+    ///         argv[argc-1] -> 最后一个字符串
+    ///         ...
+    ///         argv[0]      -> 第一个字符串
+    ///   [低]  "arg0\0" "arg1\0" ...
+    /// ```
+    /// 入口处 x0 = argc，x1 = argv（AArch64 的 a0/a1；upstream 是 x[10]/x[11]）。
+    pub fn exec(&self, elf_data: &[u8], args: &[alloc::string::String]) {
+        let (memory_set, mut user_sp, entry_point) = MemorySet::from_elf(elf_data);
+
+        // ---- 把 argv 压到用户栈上 ----
+        let mut argv_base = 0usize;
+        if !args.is_empty() {
+            // ① 先留出指针数组的位置（argc+1 个 usize，最后一个放 NULL）
+            user_sp -= (args.len() + 1) * core::mem::size_of::<usize>();
+            argv_base = user_sp;
+            for i in 0..=args.len() {
+                *crate::mm::translated_refmut::<usize>(
+                    memory_set.token(),
+                    (argv_base + i * 8) as *mut usize,
+                ) = 0;
+            }
+            // ② 依次把字符串压到更低的地址，并回填指针
+            for i in 0..args.len() {
+                let bytes = args[i].as_bytes();
+                user_sp -= bytes.len() + 1;
+                *crate::mm::translated_refmut::<usize>(
+                    memory_set.token(),
+                    (argv_base + i * 8) as *mut usize,
+                ) = user_sp;
+                for (j, &c) in bytes.iter().enumerate() {
+                    *crate::mm::translated_refmut::<u8>(
+                        memory_set.token(),
+                        (user_sp + j) as *mut u8,
+                    ) = c;
+                }
+                *crate::mm::translated_refmut::<u8>(
+                    memory_set.token(),
+                    (user_sp + bytes.len()) as *mut u8,
+                ) = 0;
+            }
+            // ③ AAPCS64 要求进入函数时 SP 16 字节对齐
+            user_sp &= !15;
+        }
+
         let mut inner = self.inner_exclusive_access();
         inner.memory_set = memory_set;
         inner.heap_bottom = user_sp;
         inner.program_brk = user_sp;
         // 用全新的 TrapContext 覆盖栈顶那份（入口/栈都换了）
-        *inner.get_trap_cx() = TrapContext::app_init_context(entry_point, user_sp);
+        let mut cx = TrapContext::app_init_context(entry_point, user_sp);
+        cx.x[0] = args.len(); // argc
+        cx.x[1] = argv_base;  // argv
+        *inner.get_trap_cx() = cx;
         // ★ 新页表要立刻生效：exec 之后不再经过调度器，直接 eret 回用户态
         inner.memory_set.activate(self.asid);
     }

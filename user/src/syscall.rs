@@ -99,9 +99,13 @@ pub fn sys_fork() -> isize {
     syscall(SYSCALL_FORK, [0, 0, 0])
 }
 
-/// `path` 必须是**以 '\0' 结尾**的字符串（内核按 C 字符串读）
-pub fn sys_exec(path: &str) -> isize {
-    syscall(SYSCALL_EXEC, [path.as_ptr() as usize, 0, 0])
+/// `path` 必须是**以 '\0' 结尾**的字符串（内核按 C 字符串读）；
+/// `args` 是 NULL 结尾的字符串指针数组（ch7 起支持命令行参数）
+pub fn sys_exec(path: &str, args: &[*const u8]) -> isize {
+    syscall(
+        SYSCALL_EXEC,
+        [path.as_ptr() as usize, args.as_ptr() as usize, 0],
+    )
 }
 
 pub fn sys_waitpid(pid: isize, exit_code: *mut i32) -> isize {
