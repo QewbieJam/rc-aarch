@@ -1,9 +1,10 @@
 # 📘 阶段 7：进程间通信（管道）—— 对照 rCore ch7 逐项讲
 
 > 项目：rc-aarch ｜ 工程：`os-cell3/` + `easy-fs/` + `user/`
-> 状态：**✅ ch7 的内核部分已完成并在树莓派 4B 的 openEuler MCS + Jailhouse cell3 上跑通**
-> （File trait、`pipe(59)`/`dup(24)`、阻塞读写；`kill/sigaction/sigprocmask/sigreturn`）
-> 更新：2026-10-21 ｜ 分支：`ch7`（从 ch6 的 `cd2563a` 分出）
+> 状态：**✅ ch7 已完成并在树莓派 4B 的 openEuler MCS + Jailhouse cell3 上跑通**
+> （File trait、`pipe(59)`/`dup(24)`、阻塞读写；`kill/sigaction/sigprocmask/sigreturn`；
+> `exec` 带 argv；**SIMD/FP 现场跨 trap 保存**）
+> 更新：2026-10-22 ｜ 分支：`ch7` → `ch7+`（`ch7+` 在此之上换堆分配器，继续往 ch8 演进）
 > 相关：[[06-阶段6-对照rCore]] ｜ [[05-阶段5-对照rCore]] ｜ [[04-阶段4-对照rCore]]
 
 ---
@@ -26,6 +27,8 @@
 | 非法 sigaction | ✅ | 信号号 50 → -1 |
 | SIGKILL 杀子进程 | ✅ | `waitpid=4 code=-9` |
 | 异常 → SIGSEGV/SIGILL | ✅ | 缺页/非法指令挂信号，没 handler 就以 -11/-4 退出 |
+| 用户 SIMD/FP 现场跨系统调用保持 | ✅ | `simd_test`：`② 向量寄存器跨系统调用保持 ✓` |
+| 自动向量化的用户循环结果正确 | ✅ | `simd_test`：`③ 自动向量化填充 3000 字节全对` |
 | **`exec` 带 argv** | ✅ | `[cmdline] argc = 3`、`argv[0]=cmdline_args argv[1]=hello argv[2]=argv` |
 
 ---
@@ -170,6 +173,35 @@ $ git diff --stat origin/ch6 origin/ch7 -- os/
 `sys_pipe` 要往用户内存写两个 `usize`，`waitpid` 写一个 `i32`。
 ch6 的 `translated_refmut` 写死了 `i32`，ch7 泛化成 `translated_refmut<T>`。
 
+### 坑 6（★ 最隐蔽）：用户 SIMD/FP 现场在系统调用后被内核改坏
+
+**现象**：`pipe_large_test` 的校验和对不上——父进程说发出 382468，子进程收到 2952 个
+字节是错的，而且**两边内容一模一样**（校验和相同，所以只比较校验和的旧测试会"通过"）。
+用逐字节比对才露出真相：父进程填完 `data[]`、**还没开始写管道**，内容就已经全错——
+`data[0..16]` 全是 3、`data[16..32]` 全是 115。
+
+**原因**：AArch64 的 **EL0 和 EL1 共用同一套 SIMD/FP 寄存器**（q0~q31、FPCR、FPSR），
+切特权级不会自动保存。用户程序是 rustc 编的 AArch64 代码，`aarch64-unknown-none`
+默认开 `+neon`，LLVM 把 `for i in 0..3000 { data[i] = (i*7+3) as u8 }` 自动向量化成
+"`movi v0.16b,#7` … `mul v5.16b, v4.16b, v0.16b`"；内核也是同一套代码，`memcpy`/
+格式化输出会用 q0~q7。编译器恰好把 `movi v0..#7` 放在一次 `close()` 系统调用**之前**——
+一进内核 v0 就被写坏，回用户态后循环拿错的常量算，整片数据悄悄错掉，**不崩溃、不越界**。
+
+**为什么 upstream 不会踩**：RISC-V 的 rCore 用户程序不用浮点，upstream 的 TrapContext
+只存整数寄存器。这是 AArch64 移植特有的坑（和 ch4 的 I-cache 坑同类：架构差异会多出
+一类"看起来不可能"的 bug）。
+
+**修法**：`TrapContext` 增加 `q[32] + fpcr + fpsr`（272 → **800 字节**），
+`trap.S` 的 `SAVE_REGS`/`RESTORE_REGS` 各加 16 条 `stp/ldp q, q` 与 `mrs/msr fpcr/fpsr`。
+代价：每次 trap 多 528 字节访存。（关掉内核 NEON 不现实：`core`/`compiler_builtins`
+是预编译的。）
+
+**验收加固**：`pipe_large_test` 现在**逐字节**比对 3000 字节内容；新增 `simd_test`：
+① EL0 能执行 SIMD；② v7 跨 `getpid()` 保持；③ 3000 字节自动向量化填充全对。
+
+> 教训：**只比较"两边各自算出的摘要"的测试，在两边被同一个 bug 写坏时会假通过**
+> （父子进程共享同一份错误数据，校验和当然一样）。跨特权级的验收要直接比内容。
+
 ---
 
 ## 七、文件清单（ch7 改动）
@@ -226,7 +258,7 @@ upstream 的 ch7 信号实现**不建用户栈上的信号帧、也没有 trampo
 和 `a0`（我们改 `x0`），要求处理函数最后调 `sigreturn()`。AArch64 上照抄即可，
 但有几个坑：
 
-1. **备份/恢复的是整个 TrapContext**（272 字节，含 x0~x30、sp_el0、ELR、SPSR）。
+1. **备份/恢复的是整个 TrapContext**（800 字节，含 x0~x30、sp_el0、ELR、SPSR，以及 q0~q31/FPCR/FPSR）。
    `sys_sigreturn` 把它整份写回，并且**返回恢复后的 x0**——因为 `trap_handler`
    在 syscall 返回后还会写一次 `cx.x[0] = ret`，不返回旧 x0 就会把返回值改坏。
 2. **两条返回路径都要处理**：同步异常（`sync_handler` → `trap_handler`）和
@@ -255,8 +287,8 @@ upstream 的 ch7 信号实现**不建用户栈上的信号帧、也没有 trampo
 5. **用户态堆**：`pipe_large_test` 为了不用用户态堆改成了传 4 字节校验和；
    以后要给 user crate 加 `#[global_allocator]`。
 
-> 计划：ch7 的管道 + 信号到此收尾；接下来开 `ch7+` 分支先还"堆分配器 + ivshmem"的技术债，
-> 再进 ch8（线程与同步）。
+> 计划：`ch7` 到此收尾（不再合并新东西）；技术债（ivshmem + stdin 通道）在 **`ch7+`**
+> 分支上继续，再从 `ch7+` 演进到 ch8（线程与同步）。
 
 ---
 
@@ -332,6 +364,9 @@ dealloc：按地址插回，和前/后相邻块合并
 - **ivshmem**（共享内存 / 持久化）：需要改 root cell 配置，和上一轮讨论的方案一致；
 - 分配器目前是"首次适配 + 合并"，长时间运行仍会有外部碎片（教学够用；
   要更好可以换伙伴系统，upstream 用的就是 `buddy_system_allocator`）。
+
+> ch7 收尾时修的 **SIMD/FP 现场**（见"坑 6"）已经同步到 ch7+；
+> 800 字节的 TrapContext 压在 2 页（8KB）内核栈顶，剩余空间仍然充足。
 
 ---
 

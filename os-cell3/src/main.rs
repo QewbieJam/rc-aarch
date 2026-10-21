@@ -85,6 +85,11 @@ pub extern "C" fn rust_main() -> ! {
     mm::remap_test();
     // ch7+：分配器自测（反复分配/释放，确认能回收）
     mm::heap_test();
+    {
+        let cpacr: usize;
+        unsafe { core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr) };
+        println!("[fpu] CPACR_EL1={:#x} FPEN={}", cpacr, (cpacr >> 20) & 0b11);
+    }
 
     // ③ ch6：把内嵌的 app 写进 RAM 磁盘上的 easy-fs，然后挂载
     fs::init();

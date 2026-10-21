@@ -63,12 +63,17 @@ __vector_table:
 
 /* =========================================================================
  * 2. 现场保存 / 恢复
- *    偏移必须与 context.rs 的 TrapContext 字段严格对应（272 字节）
+ *    偏移必须与 context.rs 的 TrapContext 字段严格对应（800 字节）
+ *
+ *    ★ ch7：除了 x0~x30/sp/elr/spsr，还要存 v0~v31 + FPCR + FPSR。
+ *      EL0 和 EL1 共用 SIMD 寄存器，而内核（rustc 编出来的 AArch64 代码）
+ *      的 memcpy/格式化输出会用 q0~q7 —— 不存的话，用户程序在两次系统调用
+ *      之间放在向量寄存器里的数据会被内核悄悄改坏（详见 context.rs 顶部注释）。
  * ========================================================================= */
     .section .text
 
     .macro SAVE_REGS
-    sub     sp, sp, #272
+    sub     sp, sp, #800
     stp     x0,  x1,  [sp, #16 * 0]
     stp     x2,  x3,  [sp, #16 * 1]
     stp     x4,  x5,  [sp, #16 * 2]
@@ -92,6 +97,28 @@ __vector_table:
     mrs     x11, spsr_el1
     stp     x9,  x10, [sp, #248]
     str     x11,      [sp, #264]
+    /* SIMD/FP 现场：v0~v31（272..784）+ FPCR/FPSR（784/792）*/
+    stp     q0,  q1,  [sp, #272]
+    stp     q2,  q3,  [sp, #304]
+    stp     q4,  q5,  [sp, #336]
+    stp     q6,  q7,  [sp, #368]
+    stp     q8,  q9,  [sp, #400]
+    stp     q10, q11, [sp, #432]
+    stp     q12, q13, [sp, #464]
+    stp     q14, q15, [sp, #496]
+    stp     q16, q17, [sp, #528]
+    stp     q18, q19, [sp, #560]
+    stp     q20, q21, [sp, #592]
+    stp     q22, q23, [sp, #624]
+    stp     q24, q25, [sp, #656]
+    stp     q26, q27, [sp, #688]
+    stp     q28, q29, [sp, #720]
+    stp     q30, q31, [sp, #752]
+    mrs     x9,  fpcr
+    mrs     x10, fpsr
+    /* ★ stp 的 imm7 最大只到 504（8 字节粒度），784 超范围 → 先算地址 */
+    add     x11, sp, #784
+    stp     x9,  x10, [x11]
     .endm
 
     .macro RESTORE_REGS
@@ -101,6 +128,27 @@ __vector_table:
     msr     sp_el0,  x9
     msr     elr_el1, x10
     msr     spsr_el1, x11
+    /* SIMD/FP 现场（★ 必须在动 sp 之前、eret 之前恢复）*/
+    add     x11, sp, #784
+    ldp     x9,  x10, [x11]
+    msr     fpcr, x9
+    msr     fpsr, x10
+    ldp     q0,  q1,  [sp, #272]
+    ldp     q2,  q3,  [sp, #304]
+    ldp     q4,  q5,  [sp, #336]
+    ldp     q6,  q7,  [sp, #368]
+    ldp     q8,  q9,  [sp, #400]
+    ldp     q10, q11, [sp, #432]
+    ldp     q12, q13, [sp, #464]
+    ldp     q14, q15, [sp, #496]
+    ldp     q16, q17, [sp, #528]
+    ldp     q18, q19, [sp, #560]
+    ldp     q20, q21, [sp, #592]
+    ldp     q22, q23, [sp, #624]
+    ldp     q24, q25, [sp, #656]
+    ldp     q26, q27, [sp, #688]
+    ldp     q28, q29, [sp, #720]
+    ldp     q30, q31, [sp, #752]
     /* 再恢复通用寄存器（最后才动 sp）*/
     ldp     x0,  x1,  [sp, #16 * 0]
     ldp     x2,  x3,  [sp, #16 * 1]
@@ -118,7 +166,7 @@ __vector_table:
     ldp     x26, x27, [sp, #16 * 13]
     ldp     x28, x29, [sp, #16 * 14]
     ldr     x30,      [sp, #240]
-    add     sp, sp, #272
+    add     sp, sp, #800
     .endm
 
 /* =========================================================================

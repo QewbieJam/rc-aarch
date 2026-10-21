@@ -6,7 +6,9 @@
 //! 管道环形缓冲区只有 32 字节，这里要传 3000 字节：
 //! 写端写满就阻塞、读端取走再继续 —— 是"阻塞 + 调度"的真正考验。
 //!
-//! （upstream 用 alloc/format! 传校验和；我们没有用户态堆，改成传 4 字节小端和。）
+//! ★ 比 upstream 多做一步：子进程**逐字节**校验收到的内容。
+//!   upstream 只比较校验和，两个进程的缓冲区如果同时被写坏，校验和一样也会"通过"
+//!   （我们在移植时就因此漏掉了一个 SIMD 现场的 bug，见 docs/07）。
 
 #[macro_use]
 extern crate user_lib;
@@ -14,6 +16,11 @@ extern crate user_lib;
 use user_lib::{close, fork, pipe, read, wait, write};
 
 const LENGTH: usize = 3000;
+
+#[inline]
+fn pattern(i: usize) -> u8 {
+    (i * 7 + 3) as u8
+}
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -28,7 +35,7 @@ fn main() -> i32 {
 
     let mut data = [0u8; LENGTH];
     if fork() == 0 {
-        // 子进程：从 down 读 3000 字节，算校验和，从 up 发回 4 字节
+        // 子进程：从 down 读 3000 字节，逐字节校验，再从 up 发回校验和
         close(down[1]);
         close(up[0]);
         let mut got = 0usize;
@@ -41,6 +48,16 @@ fn main() -> i32 {
         }
         assert_eq!(got, LENGTH, "子进程只读到 {} 字节", got);
         close(down[0]);
+        let mut bad = 0usize;
+        for (i, &b) in data.iter().enumerate() {
+            if b != pattern(i) {
+                if bad < 4 {
+                    println!("[pipe_large] 错位 i={} want={} got={}", i, pattern(i), b);
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "子进程收到 {} 字节错位", bad);
         let sum: u32 = data.iter().map(|&b| b as u32).sum();
         println!("[pipe_large] 子进程收到 {} 字节，校验和 {}", got, sum);
         write(up[1], &sum.to_le_bytes());
@@ -52,7 +69,7 @@ fn main() -> i32 {
         close(down[0]);
         close(up[1]);
         for (i, b) in data.iter_mut().enumerate() {
-            *b = (i * 7 + 3) as u8;
+            *b = pattern(i);
         }
         let mut sent = 0usize;
         while sent < LENGTH {

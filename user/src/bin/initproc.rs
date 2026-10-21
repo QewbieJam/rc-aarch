@@ -13,11 +13,12 @@ use user_lib::{exec, exit, fork, getpid, waitpid};
 
 /// 依次跑这些 app（名字, 命令行参数）；ch7 起 exec 支持 argv
 // ★ argv 的每个字符串都必须以 '\0' 结尾：内核按 C 字符串读（和 upstream 一样）
-const APPS: [(&str, &[&str]); 7] = [
+const APPS: [(&str, &[&str]); 8] = [
     ("filetest_simple\0", &["filetest_simple\0"]),
     ("cat_filea\0", &["cat_filea\0"]),
     ("pipetest\0", &["pipetest\0"]),
     ("pipe_large_test\0", &["pipe_large_test\0"]),
+    ("simd_test\0", &["simd_test\0"]),
     ("sig_test\0", &["sig_test\0"]),
     ("cmdline_args\0", &["cmdline_args\0", "hello\0", "argv\0"]),
     ("forktest\0", &["forktest\0"]),
