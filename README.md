@@ -91,7 +91,7 @@ rc-aarch/
 | `aarch64-unknown-none` target | ✅ 已装 | `rustup target add aarch64-unknown-none` |
 | `rust-objcopy` / `rust-objdump` / `rust-nm` | ✅ 已有（`~/.cargo/bin`）| — |
 | `qemu-system-aarch64` | ❌ 缺（只影响 QEMU 版，不影响 cell3 上机）| `sudo apt install qemu-system-arm` |
-| 树莓派 4B + openEuler MCS 镜像 | ✅ | 局域网 `root@192.168.31.74` |
+| 树莓派 4B + openEuler MCS 镜像 | ✅ | 局域网 `root@192.168.31.75`（DHCP，地址可能变：`./scripts/find-board.sh` 按 MAC 找）|
 
 ## 六、构建与运行
 
@@ -114,4 +114,38 @@ SSHOPTS="-F /dev/null" ./scripts/deploy-cell3.sh \
 # 脚本会：编 .cell → scp → jailhouse enable（若未使能）→ destroy/create/load/start → 打印控制台
 ```
 > 完整复现步骤（含验收标准与排错表）见 `docs/02-阶段2-对照rCore.md` 第九节。
+
+### ③ 板子网络备忘（踩过的坑）
+
+板子的 root cell 是 **initramfs**（`rootfs on /`），**IP 全靠 DHCP、`/etc` 重启即丢**，
+所以地址会变、SSH 公钥也会丢。`ip addr` 里一次出现好几个 `192.168.31.x` 是正常的，
+因为镜像里叠了三层来源（都是一张 `eth0`，不是多网卡）：
+
+| 地址 | 来源 |
+|---|---|
+| `192.168.7.2/24` | 镜像里写死的 `/etc/systemd/network/10-eth-static.network`（出厂"直连 PC"用）|
+| `192.168.31.78` | **systemd-networkd** 的 DHCP 客户端（同一文件里的 `DHCP=ipv4`）|
+| `192.168.31.76` | **dhcpcd** 的 DHCP 客户端（镜像里同时开了它，和 networkd 重复 → 每次启动多领一个租约）|
+
+想只留一个地址（比如 `192.168.31.75`）：
+
+```sh
+# ★ 顺序很重要：先补子网路由，再删地址。否则那条 192.168.31.0/24 的直连路由
+#   （src 绑在要删的地址上）会跟着消失 → 板子"ARP 通、IP 不通"，只能串口/重启救。
+ip route add 192.168.31.0/24 dev eth0 scope link
+ip addr del 192.168.31.76/24 dev eth0
+ip addr del 192.168.31.78/24 dev eth0
+ip addr del 192.168.7.2/24 dev eth0
+ip addr add 192.168.31.75/24 dev eth0
+ip route replace default via 192.168.31.1 dev eth0
+systemctl stop dhcpcd && systemctl mask dhcpcd     # 本次开机有效
+```
+
+以上都只在**本次开机**有效（`/etc` 是内存）。要重启后也稳：
+1. **推荐**：路由器里做 DHCP 静态绑定，MAC `dc:a6:32:cc:41:b4` → `192.168.31.75`；
+2. 或在 PC 上改 SD 卡 BOOT 分区里的 initramfs（把 `.network` 的 `DHCP=ipv4` 改成 `DHCP=no`、
+   地址写死，并 mask dhcpcd）。
+
+> 地址变了用 `./scripts/find-board.sh` 找（并发 ping 网段 + 按 MAC 查 `ip neigh`）；
+> 板子重启后 SSH 公钥会丢，用 `~/.local/bin/rc-ssh`（带密码回退）先把公钥装回去。
 
