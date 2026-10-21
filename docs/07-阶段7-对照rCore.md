@@ -26,6 +26,7 @@
 | 非法 sigaction | ✅ | 信号号 50 → -1 |
 | SIGKILL 杀子进程 | ✅ | `waitpid=4 code=-9` |
 | 异常 → SIGSEGV/SIGILL | ✅ | 缺页/非法指令挂信号，没 handler 就以 -11/-4 退出 |
+| **`exec` 带 argv** | ✅ | `[cmdline] argc = 3`、`argv[0]=cmdline_args argv[1]=hello argv[2]=argv` |
 
 ---
 
@@ -242,13 +243,14 @@ upstream 的 ch7 信号实现**不建用户栈上的信号帧、也没有 trampo
 
 ## 十、没做完的（ch7 剩余 / 下一步）
 
-1. **`exec` 带 argv**（cmdline_args）：把参数字符串和指针数组压到用户栈，
-   `_start` 取 `argc/argv`。工作量不大，但 user_shell 用得上；
-2. **stdin**：接 UART 输入。**当前环境不可验证**——mini-UART 的 RX 被 root cell
-   的 Linux 持有（ttyS0 上跑着 agetty），而且我们只能 ssh，没有物理串口可敲键；
-   要做得先解决输入通道（关 agetty + 共享内存转发，或接 USB-TTL）；
-3. **共享内存**：rCore ch7 没有 shm；在我们的环境里对应 Jailhouse ivshmem，
-   需要改 root cell 配置（独立课题，和持久化一起做）；
+1. ~~**`exec` 带 argv**~~ → **已完成**（见第十二节）；
+2. **stdin**：**不做 UART 版**。设计已定：UART 归 root cell（符合预期），
+   cell3 的输入通道走 **root 侧转发**——ssh 到 root cell，由 root 的守护进程把
+   stdin 写进共享内存里的控制台队列，cell 的 `Stdin` 从队列读。
+   这样 `user_shell` 能跑，而且能从当前 ssh 会话直接喂输入测试。
+   这件事和 ivshmem 一起做（ch7+）；
+3. **共享内存 / 持久化**：rCore ch7 没有 shm；在我们的环境里对应 Jailhouse ivshmem，
+   `ch7+` 的下一个任务（同时解决 stdout 虚拟控制台与磁盘镜像）；
 4. ~~**内核堆**：bump 分配器只增不减~~ → **已在 `ch7+` 分支解决**（见第十一节）；
 5. **用户态堆**：`pipe_large_test` 为了不用用户态堆改成了传 4 字节校验和；
    以后要给 user crate 加 `#[global_allocator]`。
@@ -330,3 +332,55 @@ dealloc：按地址插回，和前/后相邻块合并
 - **ivshmem**（共享内存 / 持久化）：需要改 root cell 配置，和上一轮讨论的方案一致；
 - 分配器目前是"首次适配 + 合并"，长时间运行仍会有外部碎片（教学够用；
   要更好可以换伙伴系统，upstream 用的就是 `buddy_system_allocator`）。
+
+---
+
+## 十二、ch7 收尾：exec 的 argv
+
+`sys_exec(path)` 只传程序名，很多程序（`user_shell`、`cmdline_args`）需要参数。
+补齐成 `sys_exec(path, argv)`，和 upstream ch7 同构：
+
+### 12.1 内核侧
+
+1. `sys_exec` 把用户传进来的 **argv 指针数组**（NULL 结尾）逐项 `translated_str`
+   拷回内核，得到一个 `Vec<String>`；
+2. `TaskControlBlock::exec(elf, args)` 在**新用户栈**上压参数：
+   ```text
+   [高]  argv[argc] = NULL
+         argv[argc-1] -> 最后一个字符串
+         ...
+         argv[0]     -> 第一个字符串
+   [低]  "arg0\0" "arg1\0" ...        ← 字符串从高往低依次压
+   ```
+3. 入口处设置寄存器：**x0 = argc，x1 = argv**（RISC-V 是 a0/a1 = x[10]/x[11]）；
+4. `sys_exec` 返回 argc —— 因为 `trap_handler` 之后还会写一次 `cx.x[0] = 返回值`，
+   返回 argc 正好让入口的 x0 正确（upstream 的注释也是这么写的）；
+5. SP 按 AAPCS64 对齐到 **16 字节**（upstream 只按 8 对齐，那是 RISC-V 的要求）。
+
+### 12.2 用户侧
+
+`_start(argc, argv)` 从 x0/x1 拿到参数，扫描每个字符串的 `\0` 求长度，
+拼成 `&[&str]` 再调用 `main(argc, argv)`。
+
+> 和 upstream 的差别：upstream 用 `Vec<&str>`（所以 ch7 给用户态加了 32KB 堆 +
+> buddy 分配器）；我们用固定数组 `[&str; 16]`，**不需要用户态堆**。
+
+### 12.3 两个容易踩的点
+
+1. **argv 里每个字符串都必须以 `\0` 结尾**。kernel 用 `translated_str` 按 C 字符串读，
+   Rust 的字面量 `"hello"` **不带** `\0`，直接传指针会一路读进相邻的 .rodata，
+   表现为 `argv[0] = cmdline_argshelloSomeargvNone` 这种"粘在一起"的怪字符串。
+   → 全部写成 `"hello\0"`（upstream 的测试 app 也是这么写的）。
+2. `main` 的签名：lib.rs 里声明成 `fn main(argc, argv)`，但没用到参数的 app
+   仍可以写 `fn main() -> i32` —— 多出来的 x0/x1/x2 它不读就没事（upstream 同样如此）。
+
+### 12.4 实测
+
+```
+[initproc] 子进程 exec cmdline_args
+[cmdline] argc = 3
+[cmdline] argv[0] = cmdline_args
+[cmdline] argv[1] = hello
+[cmdline] argv[2] = argv
+[cmdline] argv[0] 是程序名 ✓
+```

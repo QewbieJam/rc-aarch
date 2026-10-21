@@ -62,9 +62,25 @@ pub fn sys_fork() -> isize {
 /// 换成另一个 ELF 执行（对照 upstream 的 `sys_exec`）
 ///
 /// `path` 是用户态 C 字符串指针，必须先翻译回内核（ch4 的坑 4）。
-pub fn sys_exec(path: *const u8) -> isize {
+pub fn sys_exec(path: *const u8, argv: *const usize) -> isize {
     let token = current_user_token();
     let path = translated_str(token, path);
+    // ch7：把 argv 指针数组里的每个字符串拷回内核
+    let mut args: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+    if !argv.is_null() {
+        let mut p = argv;
+        loop {
+            if args.len() > 16 {
+                break; // 防御：用户数组没写结尾的 NULL 时别读飞
+            }
+            let arg_ptr = *translated_ref(token, p);
+            if arg_ptr == 0 {
+                break;
+            }
+            args.push(translated_str(token, arg_ptr as *const u8));
+            p = unsafe { p.add(1) };
+        }
+    }
     // ch7：ELF 读进**页帧缓冲**（不用 Vec —— 内核 bump 堆不回收，Vec 扩容会泄漏）
     let size = match crate::fs::file_size(path.as_str()) {
         Some(s) if s > 0 => s,
@@ -79,8 +95,10 @@ pub fn sys_exec(path: *const u8) -> isize {
         crate::println!("[kernel] exec: \"{}\" 只读到 {}/{} 字节", path, n, size);
         return -1;
     }
-    current_task().unwrap().exec(&buf.as_slice()[..size]);
-    0
+    let argc = args.len();
+    current_task().unwrap().exec(&buf.as_slice()[..size], &args);
+    // 返回 argc：trap_handler 会把它写回 x0（exec 后入口处的第一个参数）
+    argc as isize
 }
 
 /// 等待子进程（对照 upstream 的 `sys_waitpid`）

@@ -21,17 +21,40 @@ pub mod console;
 mod lang_items;
 mod syscall;
 
-// app 提供 main（对应 rCore 的 `unsafe extern "Rust" { fn main() -> i32; }`）
+// app 提供 main（ch7 起带命令行参数；不关心参数的 app 仍然可以写 `fn main() -> i32`，
+// 多出来的 x0/x1/x2 会被它忽略 —— upstream 也是这么做的）
 unsafe extern "Rust" {
-    fn main() -> i32;
+    fn main(argc: usize, argv: &[&str]) -> i32;
 }
 
-/// 用户程序入口（对应 rCore ch2 的 `_start`）
+/// 最多支持几个命令行参数
+const MAX_ARGS: usize = 16;
+
+/// 用户程序入口（对应 rCore ch7 的 `_start`）
+///
+/// ★ AArch64 约定：内核在入口处把 **x0 = argc、x1 = argv** 放好（对应 RISC-V 的 a0/a1）。
+///   这里把 argv 解析成 `&[&str]` 再交给 main。
+///   upstream 用 `Vec<&str>`（需要用户态堆），我们用固定数组，省掉一个分配器。
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(argc: usize, argv: usize) -> ! {
     clear_bss();
-    unsafe { exit(main()) }
+    let mut buf: [&'static str; MAX_ARGS] = [""; MAX_ARGS];
+    let n = if argc < MAX_ARGS { argc } else { MAX_ARGS };
+    for i in 0..n {
+        let s = unsafe {
+            ((argv + i * core::mem::size_of::<usize>()) as *const usize).read_volatile()
+        };
+        let mut len = 0usize;
+        while unsafe { ((s + len) as *const u8).read_volatile() } != 0 {
+            len += 1;
+        }
+        buf[i] = core::str::from_utf8(unsafe {
+            core::slice::from_raw_parts(s as *const u8, len)
+        })
+        .unwrap();
+    }
+    unsafe { exit(main(argc, &buf[..n])) }
 }
 
 /// 清 .bss：链接器只把"文件里有的字节"装进 .bin，
@@ -173,9 +196,23 @@ pub fn fork() -> isize {
     sys_fork()
 }
 
-/// exec：把当前进程换成另一个 app。`path` 必须带 '\0' 结尾（如 "forktest\0"）
-pub fn exec(path: &str) -> isize {
-    sys_exec(path)
+/// exec：把当前进程换成另一个 app，并传命令行参数
+///
+/// `path` 和**每个 arg** 都必须带 `\0` 结尾（内核按 C 字符串读，和 upstream 一致）；
+/// `args[0]` 一般是程序名。
+/// 例：`exec("cmdline_args\0", &["cmdline_args\0", "hello\0", "world\0"])`
+pub fn exec(path: &str, args: &[&str]) -> isize {
+    let mut ptrs: [*const u8; MAX_ARGS] = [core::ptr::null(); MAX_ARGS];
+    let n = if args.len() < MAX_ARGS - 1 {
+        args.len()
+    } else {
+        MAX_ARGS - 1
+    };
+    for i in 0..n {
+        ptrs[i] = args[i].as_ptr();
+    }
+    // ptrs[n] 本来就是 null（数组以 null 初始化），正好当 argv 的结尾
+    sys_exec(path, &ptrs[..n + 1])
 }
 
 /// 等任意子进程（对应 rCore 的 `pub fn wait(exit_code: &mut i32) -> isize`）
