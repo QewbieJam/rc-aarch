@@ -381,7 +381,58 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         let pte = page_table
             .translate(vpn)
             .unwrap_or_else(|| panic!("用户指针 {:#x} 没有映射（页表 {:?}）", start, vpn));
-        assert!(pte.is_user(), "用户指针 {:#x} 指向的是内核页，拒绝访问", start);
+        if !pte.is_user() {
+            let cx = crate::task::current_trap_cx();
+            let ttbr0: usize;
+            unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0) };
+            crate::println!(
+                "[mm] 用户指针 {:#x} 没映射/非用户页：pte={:#x} token={:#x} task={} elr={:#x} sp={:#x}",
+                start,
+                pte.bits,
+                token,
+                crate::task::current_task_id(),
+                cx.elr_el1,
+                cx.sp_el0
+            );
+            crate::println!(
+                "[mm] 当前 TTBR0={:#x}（低 48 位 {:#x}），TCB token={:#x}",
+                ttbr0,
+                ttbr0 & 0x0000_ffff_ffff_f000,
+                crate::task::current_task()
+                    .unwrap()
+                    .inner_exclusive_access()
+                    .memory_set
+                    .token()
+            );
+            let insn = crate::mm::read_user_u32(token, cx.elr_el1);
+            let prev = crate::mm::read_user_u32(token, cx.elr_el1.wrapping_sub(4));
+            let esr: usize;
+            unsafe { core::arch::asm!("mrs {}, esr_el1", out(reg) esr) };
+            crate::println!(
+                "[mm] ELR={:#x} x8={} insn@ELR={:#x?} insn@ELR-4={:#x?} ESR={:#x}",
+                cx.elr_el1,
+                cx.x[8],
+                insn,
+                prev,
+                esr
+            );
+            crate::println!(
+                "[mm] 当前任务 areas: {}",
+                crate::task::current_task()
+                    .unwrap()
+                    .inner_exclusive_access()
+                    .memory_set
+                    .debug_areas()
+            );
+        }
+        assert!(
+            pte.is_user(),
+            "用户指针 {:#x} 指向的是内核页（pte={:#x}, token={:#x}, task={}）",
+            start,
+            pte.bits,
+            token,
+            crate::task::current_task_id()
+        );
         let ppn = pte.ppn();
         vpn.step();
         let mut end_va: VirtAddr = vpn.into();

@@ -24,6 +24,7 @@ pub use address::{PhysAddr, PhysPageNum, StepByOne, VPNRange, VirtAddr, VirtPage
 pub use frame_allocator::{
     FrameBuf, FrameTracker, frame_alloc, frame_alloc_contig, frame_dealloc_range, frame_stats,
 };
+pub use heap_allocator::{heap_stats, heap_test};
 pub use memory_set::{MemorySet, kernel_token, remap_test};
 pub use page_table::{
     PTEFlags, PageTable, PageTableEntry, UserBuffer, translated_byte_buffer, translated_ref,

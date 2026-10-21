@@ -82,8 +82,14 @@ impl MemorySet {
         unsafe {
             core::arch::asm!(
                 "msr ttbr0_el1, {ttbr0}",
-                "dsb ish",
+                "isb",
                 "tlbi vmalle1",
+                "dsb ish",
+                // ★ ARMv8 的要求：同一个 VA 换到新的物理页之后，I-cache 里可能还留着
+                //   旧页的指令。我们的所有 app 都链接在同一段 VA（0x10000 起）上，
+                //   所以每次换地址空间都必须让 I-cache 失效，否则可能执行到上一个
+                //   app 的代码（ch7+ 实测过的偶发崩溃，见 docs/08）。
+                "ic iallu",
                 "dsb ish",
                 "isb",
                 ttbr0 = in(reg) ttbr0,
@@ -275,6 +281,22 @@ impl MemorySet {
 
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
+    }
+
+    /// 调试用：列出所有映射区（ch7+ 排查"用户页没映射"）
+    pub fn debug_areas(&self) -> alloc::string::String {
+        use core::fmt::Write;
+        let mut s = alloc::string::String::new();
+        for area in self.areas.iter() {
+            let _ = write!(
+                s,
+                "[{:#x},{:#x}) perm={:?} ",
+                area.vpn_range.get_start().0 << 12,
+                area.vpn_range.get_end().0 << 12,
+                area.map_perm
+            );
+        }
+        s
     }
 
     /// 从另一个用户地址空间**深拷贝**一份（ch5 的 `fork`）

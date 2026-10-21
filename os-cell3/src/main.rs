@@ -83,6 +83,8 @@ pub extern "C" fn rust_main() -> ! {
     // ② ch4：建内核地址空间并打开 stage-1 MMU（恒等映射，地址不变）
     mm::init();
     mm::remap_test();
+    // ch7+：分配器自测（反复分配/释放，确认能回收）
+    mm::heap_test();
 
     // ③ ch6：把内嵌的 app 写进 RAM 磁盘上的 easy-fs，然后挂载
     fs::init();

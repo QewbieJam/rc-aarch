@@ -7,6 +7,8 @@
 > 进度：ch1 裸机 hello ｜ ch2 陷入+系统调用+批处理 ｜ ch3 任务切换+时间片 ｜
 > ch4 地址空间+分页 ｜ ch5 进程（fork/exec/waitpid） ｜ ch6 文件系统（easy-fs + RAM 磁盘） ｜
 > ch7 进程间通信（管道 pipe/dup + 信号 kill/sigaction/sigreturn）
+>
+> 分支 `ch7+`：内核堆换成空闲链表分配器（可回收）+ 修复 exec 的 I-cache 失效问题
 
 ---
 

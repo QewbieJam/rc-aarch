@@ -97,7 +97,6 @@ pub fn current_user_token() -> usize {
 }
 
 /// 当前任务的 TrapContext（在内核栈顶）
-#[allow(dead_code)]
 pub fn current_trap_cx() -> &'static mut TrapContext {
     current_task()
         .unwrap()

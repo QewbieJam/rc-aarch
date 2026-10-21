@@ -36,7 +36,8 @@ pub use context::TaskContext;
 pub use manager::{add_task, pid2task, remove_from_pid2task};
 pub use signal::{MAX_SIG, SignalFlags};
 pub use processor::{
-    current_task, current_task_id, current_user_token, run_tasks, schedule, take_current_task,
+    current_task, current_task_id, current_trap_cx, current_user_token, run_tasks, schedule,
+    take_current_task,
 };
 
 /// initproc 的 pid（它退出 = 系统关机）

@@ -121,6 +121,22 @@ pub extern "C" fn trap_handler(cx: &mut TrapContext) {
 
     match kind {
         ec::SVC64 => {
+            // 临时诊断（ch7+）：handler 拿到的 cx 地址是否等于 TCB 里记的 trap_cx_ptr
+            {
+                let cx_addr = cx as *mut TrapContext as usize;
+                let stored = crate::task::current_task()
+                    .unwrap()
+                    .inner_exclusive_access()
+                    .trap_cx_ptr;
+                if cx_addr != stored {
+                    crate::println!(
+                        "[dbg] trap cx 地址不一致: handler={:#x} tcb={:#x} task={}",
+                        cx_addr,
+                        stored,
+                        crate::task::current_task_id()
+                    );
+                }
+            }
             // ★★ RISC-V→AArch64 移植大坑（本次实测踩到）：
             //   rCore 要写 `cx.sepc += 4`，因为 RISC-V 的 sepc 指向 ecall **本身**；
             //   AArch64 的 ELR_EL1 在 SVC 异常时已经指向 svc 的**下一条指令**，
@@ -431,11 +447,19 @@ pub fn init_timer_irq() {
 /// 停机（裸机 cell 没有关机能力，只能死循环等外部处理；exit_code 只用于打印）
 pub fn shutdown_with(exit_code: i32) -> ! {
     let (total, free) = crate::mm::frame_stats();
+    let (heap_total, heap_free, heap_max, heap_blocks) = crate::mm::heap_stats();
     crate::println!(
-        "[kernel] shutdown：initproc exit_code={}；页帧 {}/{} 空闲（回收正常的话应该接近开机值）",
+        "[kernel] shutdown：initproc exit_code={}；页帧 {}/{} 空闲",
         exit_code,
         free,
         total
+    );
+    crate::println!(
+        "[kernel]           内核堆 {}/{} KB 空闲（最大块 {}KB，{} 个空闲块）",
+        heap_free / 1024,
+        heap_total / 1024,
+        heap_max / 1024,
+        heap_blocks
     );
     infinite_loop()
 }
