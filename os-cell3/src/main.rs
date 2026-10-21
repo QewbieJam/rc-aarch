@@ -43,6 +43,7 @@ mod comm_region;
 mod config;
 mod fs;
 mod gic;
+mod ivshmem;
 mod loader;
 mod mm;
 mod sync;
@@ -97,6 +98,12 @@ pub extern "C" fn rust_main() -> ! {
 
     // ④ ch6 正式流程：进程 + 文件系统
     println!("[rc-aarch] stage 6: 进程 + 文件系统（RAM 磁盘 easy-fs）on Jailhouse cell3");
+
+    // ★ ch7+：ivshmem 共享内存通道（phase 1：打通 guest ↔ root 的字节通道）
+    ivshmem::init();
+    let hello = b"[guest] hello from cell3\n";
+    let n = ivshmem::send(hello);
+    println!("[shm] 已向 root 发送 {} 字节问候", n);
 
     // ⑤ 创建 pid=1 的 initproc，放进就绪队列
     task::add_initproc();

@@ -205,6 +205,27 @@ impl MemorySet {
                 None,
             );
         }
+        // ch7+：ivshmem 共享内存（见 ivshmem.rs）
+        //   0x6ffff000  root 的输出段 = 我们的 RX（stage-2 只读）
+        //   0x7007e000  我们的输出段 = 我们的 TX（stage-2 可写）
+        memory_set.push(
+            MapArea::new(
+                0x6fff_f000usize.into(),
+                0x7007_e000usize.into(),
+                MapType::Identical,
+                MapPermission::R,
+            ),
+            None,
+        );
+        memory_set.push(
+            MapArea::new(
+                0x7007_e000usize.into(),
+                0x700f_d000usize.into(),
+                MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
         memory_set
     }
 
@@ -274,6 +295,10 @@ impl MemorySet {
             memory_set
                 .page_table
                 .share_l1_entry(kernel_pt, crate::mm::KERNEL_L1_INDEX);
+            // ch7+：共享内存段在 L1[1]，用户页表也要挂上
+            memory_set
+                .page_table
+                .share_l1_entry(kernel_pt, crate::mm::SHMEM_L1_INDEX);
         }
 
         (memory_set, user_stack_top, elf.entry)
@@ -335,6 +360,10 @@ impl MemorySet {
             memory_set
                 .page_table
                 .share_l1_entry(kernel_pt, crate::mm::KERNEL_L1_INDEX);
+            // ch7+：共享内存段在 L1[1]，用户页表也要挂上
+            memory_set
+                .page_table
+                .share_l1_entry(kernel_pt, crate::mm::SHMEM_L1_INDEX);
         }
         memory_set
     }

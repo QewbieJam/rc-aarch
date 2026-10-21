@@ -419,3 +419,130 @@ dealloc：按地址插回，和前/后相邻块合并
 [cmdline] argv[2] = argv
 [cmdline] argv[0] 是程序名 ✓
 ```
+
+---
+
+## 十三、ch7+ phase 1：ivshmem 跨 cell 字节通道（打通了）
+
+目标只有一个：**证明 guest cell3 和 root 用户态之间能收发字节**。控制台语义
+（`Stdin`/`Stdout`/`user_shell`）留到 phase 2。
+
+### 13.1 验收结果（2026-10-22）
+
+root 侧 `ivshm-console -n 20` 做 round-trip：每发一行 `ping-NNN` 等 guest 回显。
+
+```
+[shm] 已向 root 发送 25 字节问候
+[shm] root→guest: ping-000
+...（guest 控制台共 20 行）
+[ivshm] 丢弃: [guest] hello from cell3     ← guest 的启动问候，round-trip 模式丢弃
+[ivshm] round-trip 20/20 成功
+```
+
+既有能力回归：pipetest / pipe_large(382468) / simd_test / sig_test / cmdline_args /
+forktest 全过，停机 `页帧 7690/7983`。
+
+### 13.2 内存从哪来、权限怎么分
+
+`cells/rpi4-rust-cell3.c` 用 `JAILHOUSE_SHMEM_NET_REGIONS(0x6fffe000, 1)` 声明了和
+root cell **同一批物理页**，带 `JAILHOUSE_MEM_ROOTSHARED`。hypervisor 在 `cell_create`
+时不会把它们从 root cell 里 unmap（`hypervisor/control.c`）→ 两个 cell 共享。
+
+| 地址 | 谁写 | 谁读 | 用途 |
+|---|---|---|---|
+| `0x6fffe000` | hypervisor | 两边 | 状态表（VETH 用；我们没碰）|
+| `0x6ffff000` | **root** | guest | root 的 TX = guest 的 RX |
+| `0x7007e000` | **guest** | root | guest 的 TX = root 的 RX |
+
+关键约束：**每个 cell 只能写自己的输出段**（对方的段在 stage-2 里是只读的）。
+
+### 13.3 段内协议（我们自己定的简单字节环，不是 virtio vring）
+
+```text
+off 0   magic   u32  'RCSH'
+off 4   gen     u32  这一段被初始化的"代数"（每次启动换一个）
+off 8   write   u32  生产者下标（自由回绕）
+off 12  read    u32  消费者下标
+off 16  cap     u32
+off 20  data[cap]
+```
+
+★ **read 下标写在自己的段里**：因为消费者只能写自己的段。"我读到哪儿"必须让生产者
+能看到，所以它放在消费者自己的段里；生产者算 free 时去读**对方段里的 read**。
+（VETH 里 `rx.vr.used` 和 `tx.vr.used` 的 swap 就是为了这个。）
+
+### 13.4 root 侧怎么访问：uio_ivshmem
+
+- `uio_ivshmem` 只匹配 PCI class `(0x00, 0x4001 RPMSG)`；我们的设备是 VETH（class
+  `0x0001`），自动绑定会 `ENODEV`。用 **`new_id` 动态加一条 ID** 就能绑：
+  `echo -n "110a 4106" > /sys/bus/pci/drivers/uio_ivshmem/new_id`
+- 一次只能绑一个驱动：先 `echo -n 0001:00:00.0 > .../ivshmem-net/unbind`；
+- ivshmem PCI 设备**只有在 `jailhouse enable` 之后才应答 config cycle**，所以顺序必须是
+  enable → 切 uio → 起守护进程 → `cell create`（首次）/`RELOAD`。
+- 封装成了 `scripts/setup-ivshm-uio.sh`（幂等）。
+
+uio 给的 map（root 视角，dev_id=0）：
+
+| map | 内容 | 权限 |
+|---|---|---|
+| map0 | `0xffa00000` 4KB 寄存器 | RW |
+| map1 | `0x6fffe000` 状态表 | RO |
+| map2 | `0x6ffff000` 起两段（peer0/peer1 输出）| RO |
+| map3 | `0x6ffff000` 一段（root 自己的输出）| RW |
+
+### 13.5 这一阶段踩的坑
+
+1. **用户页表只共享内核的 L1[3]**（0xC0000000~0xFFFFFFFF），而共享内存在
+   `0x40000000~0x7fffffff` → L1[1]。内核在 boot 阶段写共享内存没事（TTBR0=内核页表），
+   但任务跑起来后（TTBR0=用户页表）在定时器中断里读共享内存就 **translation fault
+   level 1**。修法：`from_elf`/`from_existed_user` 里除了 `KERNEL_L1_INDEX` 再
+   `share_l1_entry(SHMEM_L1_INDEX)`。
+2. **read 下标放错段**：写进对方段会得到 stage-1 permission fault（我们是只读）。
+   改成"read 写自己段、free 读对方段的 read"后正常。
+3. **共享内存不清零**：`magic` 可能是上次运行留下的，守护进程会读到上一轮的残留数据
+   （表现为同一句问候打印两遍）。加 `gen`（guest 用 `CNTVCT_EL0`、root 用
+   `clock_gettime`）+ 启动时"把 read 推到 write"丢弃旧数据。
+4. **RELOAD 不会重新 create cell**：改了 cell 配置（加共享内存段）之后必须让 cell
+   **重新 create**（重启板子后第一次用完整流程），否则 stage-2 里根本没有这些页，
+   首次访问就是 `Unhandled data write`。
+
+### 13.6 文件清单（phase 1）
+
+| 文件 | 作用 |
+|---|---|
+| `cells/rpi4-rust-cell3.c` | +`JAILHOUSE_SHMEM_NET_REGIONS(0x6fffe000, 1)`（4 段）|
+| `os-cell3/src/ivshmem.rs` | **新**：共享内存字节环（send/recv/init/IRQ 轮询）|
+| `os-cell3/src/mm/memory_set.rs` | 映射两段共享内存；用户页表挂 L1[1] |
+| `os-cell3/src/mm/mod.rs` | +`SHMEM_L1_INDEX` |
+| `os-cell3/src/main.rs` | 启动时 init + 发问候 |
+| `os-cell3/src/trap/mod.rs` | 定时器 IRQ 里 `poll_rx_to_console()`（phase 1 的临时消费者）|
+| `tools/ivshm-console.c` | root 侧 uio 守护进程：收发 + round-trip 自检 |
+| `scripts/setup-ivshm-uio.sh` | **新**：把 ivshmem 设备从 net 驱动切到 uio |
+
+### 13.7 怎么复现
+
+```sh
+# 0) 板子重启后第一次：完整流程（会 create cell）
+cd ~/rc-aarch && ROOTCELL=root@192.168.31.75 scripts/deploy-cell3.sh
+
+# 1) 切 uio（jailhouse 已使能之后）
+ROOTCELL=root@192.168.31.75 ./scripts/setup-ivshm-uio.sh
+
+# 2) 编译守护进程并上传
+aarch64-linux-gnu-gcc -O2 -static -o /tmp/ivshm-console tools/ivshm-console.c
+scp /tmp/ivshm-console root@192.168.31.75:/root/ivshm-console
+
+# 3) 起守护进程（等 guest 新的 gen 后发 20 轮 ping），再 RELOAD 部署
+setsid nohup /root/ivshm-console -s x -n 20 -d 60 > /root/ivshm.out 2> /root/ivshm.err &
+RELOAD=1 ROOTCELL=root@192.168.31.75 scripts/deploy-cell3.sh
+```
+
+### 13.8 下一步（phase 2）
+
+- guest：把 `poll_rx_to_console` 换成真正的 `Stdin`（读共享内存环、空了就
+  `suspend_current_and_run_next`），`Stdout` 写自己的 TX 段；
+- root：守护进程接 ssh 的 stdin/stdout（而不是 `-n` 自检）；
+- 用户态：`user_shell`（读一行、`exec` 命令），正好用上 ch7 的 argv 和 pipe。
+
+> 提示：目前 root 侧的 `ivshm0` 网络（ivshmem-net）被我们解绑了；如果之后还要用它，
+> 记得 `echo 0001:00:00.0 > .../ivshmem-net/bind` 绑回去（两个驱动只能二选一）。

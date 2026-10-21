@@ -23,7 +23,7 @@
 struct {
 	struct jailhouse_cell_desc cell;
 	__u64 cpus[1];
-	struct jailhouse_memory mem_regions[4];
+	struct jailhouse_memory mem_regions[8];
 	struct jailhouse_irqchip irqchips[0];
 } __attribute__((packed)) config = {
 	.cell = {
@@ -60,7 +60,19 @@ struct {
 	},
 
 	.mem_regions = {
-		/* [0] 内核镜像：LOADABLE 区的 virt_start 就是加载地址 = 链接地址 */
+		/*
+		 * ch7+ ivshmem：和 root cell 共享的 4 段内存（peer 1 视角）
+		 *   [0] 0x6fffe000 0x1000  状态表（hypervisor 维护，本阶段没用）
+		 *   [1] 0x00000000 0       公共 R/W 段（v2 里留空）
+		 *   [2] 0x6ffff000 0x7f000  peer0（root）的输出段 = 我们的 RX（只读）
+		 *   [3] 0x7007e000 0x7f000  peer1（我们）的输出段 = 我们的 TX（可写）
+		 * 宏来自 jailhouse/include/jailhouse/cell-config.h：
+		 *   dev_id=1 → [3] 带 WRITE，[2] 只读；dev_id=0 时镜像相反。
+		 * ★ 这些段带 JAILHOUSE_MEM_ROOTSHARED，cell_create 时 hypervisor
+		 *   不会把它们从 root cell 里 unmap（hypervisor/control.c），于是两边都能访问。
+		 */
+		JAILHOUSE_SHMEM_NET_REGIONS(0x6fffe000, 1),
+		/* [4] 内核镜像：LOADABLE 区的 virt_start 就是加载地址 = 链接地址 */
 		{
 			.phys_start = 0xfa000000,
 			.virt_start = 0xfa000000,
@@ -68,7 +80,7 @@ struct {
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
 				 JAILHOUSE_MEM_EXECUTE | JAILHOUSE_MEM_LOADABLE,
 		},
-		/* [1] 内核 RAM：栈/bss 之后的堆、ch4+ 的帧分配器 */
+		/* [5] 内核 RAM：栈/bss 之后的堆、ch4+ 的帧分配器 */
 		{
 			.phys_start = 0xfa100000,
 			.virt_start = 0xfa100000,
@@ -76,7 +88,7 @@ struct {
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
 				 JAILHOUSE_MEM_EXECUTE,
 		},
-		/* [2] mini UART：与 root cell / hypervisor 共用（ROOTSHARED） */
+		/* [6] mini UART：与 root cell / hypervisor 共用（ROOTSHARED） */
 		{
 			.phys_start = 0xfe215040,
 			.virt_start = 0xfe215040,
@@ -85,7 +97,7 @@ struct {
 				 JAILHOUSE_MEM_IO | JAILHOUSE_MEM_IO_8 |
 				 JAILHOUSE_MEM_IO_32 | JAILHOUSE_MEM_ROOTSHARED,
 		},
-		/* [3] 通信区（ch2+ 报 cell 状态、ch3+ ivshmem 握手会用） */
+		/* [7] 通信区（ch2+ 报 cell 状态） */
 		{
 			.virt_start = 0xfc000000,
 			.size = 0x1000,

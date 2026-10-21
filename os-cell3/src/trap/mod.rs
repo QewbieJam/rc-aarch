@@ -299,6 +299,8 @@ pub extern "C" fn irq_dispatch(_cx: &mut TrapContext) {
             if from_el0 {
                 ticks_add(addr_of_mut!(TICKS_FROM_EL0));
             }
+            // ch7+：共享内存通道的临时消费者（phase 1）
+            crate::ivshmem::poll_rx_to_console();
             // 控制台只有 2KB：只打第 1 次（以及每 100 次），别把证据挤掉
             if n == 1 || n % 100 == 0 {
                 crate::println!(

@@ -65,6 +65,14 @@ pub fn read_user_u32(token: usize, va: usize) -> Option<u32> {
 /// `0xC0000000 ~ 0xFFFFFFFF` 这 1GB 里 → L1 index = (VA >> 30) & 0x1FF = 3。
 pub const KERNEL_L1_INDEX: usize = 3;
 
+/// 共享内存段（0x6ffff000 / 0x7007e000）在页表里的 L1 下标
+///
+/// 它们在 `0x40000000 ~ 0x7fffffff` 这 1GB 里 → L1 index = 1。
+/// ★ 用户页表默认只共享了内核的 L1[3]（0xC0000000~0xFFFFFFFF），
+///   所以共享内存的映射必须在用户页表里**也挂 L1[1]**，否则任务跑起来之后
+///   （TTBR0 = 用户页表）内核在中断/syscall 里访问共享内存会缺页。
+pub const SHMEM_L1_INDEX: usize = 1;
+
 /// 把一段地址的 D-cache 逐行清到 PoU（写代码之后、执行之前必须做）
 ///
 /// ★★ 这里踩过一个坑：`DC CVAU` 一次只清**一条 cache line**（Cortex-A72 是 64 字节），
