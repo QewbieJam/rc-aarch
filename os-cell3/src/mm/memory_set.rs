@@ -82,8 +82,14 @@ impl MemorySet {
         unsafe {
             core::arch::asm!(
                 "msr ttbr0_el1, {ttbr0}",
-                "dsb ish",
+                "isb",
                 "tlbi vmalle1",
+                "dsb ish",
+                // ★ ARMv8 的要求：同一个 VA 换到新的物理页之后，I-cache 里可能还留着
+                //   旧页的指令。我们的所有 app 都链接在同一段 VA（0x10000 起）上，
+                //   所以每次换地址空间都必须让 I-cache 失效，否则 exec 之后可能
+                //   执行到上一个 app 的代码（ch7+ 实测的偶发崩溃，见 docs/07 第十一节）。
+                "ic iallu",
                 "dsb ish",
                 "isb",
                 ttbr0 = in(reg) ttbr0,
