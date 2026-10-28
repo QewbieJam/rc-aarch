@@ -117,6 +117,9 @@ SSHOPTS="-F /dev/null" ./scripts/deploy-cell3.sh \
 # 脚本会：编 .cell → scp → jailhouse enable（若未使能）→ destroy/create/load/start → 打印控制台
 ```
 > 完整复现步骤（含验收标准与排错表）见 `docs/02-阶段2-对照rCore.md` 第九节。
+>
+> **逐章验收（真机）**：`./scripts/verify-chapters.sh` —— 按 ch1→ch9 跑一遍并打印
+> PASS/FAIL 表（说明见 `docs/10-逐章验收.md`）。
 
 ### ③ 板子网络备忘（踩过的坑）
 

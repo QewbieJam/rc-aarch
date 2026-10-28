@@ -338,6 +338,10 @@ impl TaskControlBlock {
     /// 多线程里 exec，这里记一笔：真要支持得把其它线程一并杀掉）。
     pub fn exec(&self, elf_data: &[u8], args: &[alloc::string::String]) {
         let (memory_set, mut user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        // ★ 堆区的起点是"没有压 argv 之前的栈顶"（from_elf 建的 0 长 MapArea 在那里）；
+        //   压完 argv 后 user_sp 会降到堆区起点以下，不能再拿它当 heap_bottom，
+        //   否则 sbrk 的 append_to 找不到对应 MapArea 会一直返回 -1（ch7 埋下、ch8 验收时暴露）。
+        let heap_base = user_sp;
 
         // ---- 把 argv 压到用户栈上（布局见 ch7 的说明）----
         let mut argv_base = 0usize;
@@ -376,8 +380,8 @@ impl TaskControlBlock {
             let mut pcb = process.inner_exclusive_access();
             pcb.memory_set = memory_set;
             pcb.user_sp = user_sp;
-            pcb.heap_bottom = user_sp;
-            pcb.program_brk = user_sp;
+            pcb.heap_bottom = heap_base;
+            pcb.program_brk = heap_base;
         }
         let mut cx = TrapContext::app_init_context(entry_point, user_sp);
         cx.x[0] = args.len();
