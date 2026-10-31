@@ -10,8 +10,8 @@
 > ch8 线程 + 同步（mutex/semaphore/condvar）+ 共享内存 stdin/stdout + user_shell ｜
 > ch9 文件系统优化（块缓存 + 命中率统计）
 >
-> 分支 `ch7+`：内核堆换成空闲链表分配器（可回收）；修复 exec 的 I-cache 失效；
-> ivshmem 共享内存控制台（stdin/stdout + user_shell）；ch8 线程与同步；ch9 块缓存
+> 分支：`ch1`…`ch7` 按章；`ch7+` 是演进主线（可回收堆 → ivshmem 控制台 →
+> ch8 线程/同步 → ch9 块缓存 → 逐章验收）；`ch8`/`ch9` 是这条线上的两个快照分支
 
 ---
 
