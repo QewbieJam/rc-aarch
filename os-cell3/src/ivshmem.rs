@@ -67,30 +67,30 @@ const OFF_CAP: usize = 16;
 static mut LAST_RX_GEN: u32 = 0;
 
 #[inline]
-unsafe fn rd32(addr: usize) -> u32 {
+unsafe fn rd32(addr: usize) -> u32 { unsafe {
     (addr as *const u32).read_volatile()
-}
+}}
 
 #[inline]
-unsafe fn wr32(addr: usize, v: u32) {
+unsafe fn wr32(addr: usize, v: u32) { unsafe {
     (addr as *mut u32).write_volatile(v);
-}
+}}
 
 /// 读一个下标（acquire：保证之后读到的数据是发布者写下的）
 #[inline]
-unsafe fn ld_acquire(addr: usize) -> u32 {
+unsafe fn ld_acquire(addr: usize) -> u32 { unsafe {
     let v: u32;
     asm!("ldar {v:w}, [{p}]", v = out(reg) v, p = in(reg) addr,
          options(nostack, preserves_flags));
     v
-}
+}}
 
 /// 写一个下标（release：保证之前写的数据先对读者可见）
 #[inline]
-unsafe fn st_release(addr: usize, v: u32) {
+unsafe fn st_release(addr: usize, v: u32) { unsafe {
     asm!("stlr {v:w}, [{p}]", v = in(reg) v, p = in(reg) addr,
          options(nostack, preserves_flags));
-}
+}}
 
 /// 初始化我们自己的 TX 段（root 那段的 magic 由 root 的守护进程写）
 pub fn init() {

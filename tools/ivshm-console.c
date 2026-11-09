@@ -183,9 +183,10 @@ int main(int argc, char **argv)
 	double duration = 3.0;
 	int rounds = 1;
 	int interactive = 0;
+	int reset_only = 0;
 	size_t in_sz, out_sz;
 	uint8_t buf[4096];
-	double start, deadline;
+	double deadline;
 	int fd;
 
 	for (int i = 1; i < argc; i++) {
@@ -197,6 +198,8 @@ int main(int argc, char **argv)
 			rounds = atoi(argv[++i]);
 		else if (strcmp(argv[i], "-i") == 0)
 			interactive = 1;
+		else if (strcmp(argv[i], "-r") == 0)
+			reset_only = 1;
 		else {
 			fprintf(stderr, "用法: %s [-s 文本] [-d 秒]\n", argv[0]);
 			return 2;
@@ -219,10 +222,29 @@ int main(int argc, char **argv)
 		   0x7f000;
 
 	ring_init(root_tx);
+	if (reset_only) {
+		fprintf(stderr, "[ivshm] 已重置 root 段（丢弃上一轮残留输入）\n");
+		close(fd);
+		return 0;
+	}
 	/* 启动前 ring 里可能还有上一次运行的残留：把 read 推到 write，先丢弃 */
 	if (rd32(guest_tx, OFF_MAGIC) == MAGIC) {
 		last_guest_gen = rd32(guest_tx, OFF_GEN);
 		wr32(root_tx, OFF_READ, rd32(guest_tx, OFF_WRITE));
+	}
+	/* 等 guest 把它的段初始化好（magic 出现）再发；gen 变了说明它这次真的启动了 */
+	{
+		uint32_t gen0 = rd32(guest_tx, OFF_GEN);
+		double t0 = now_sec();
+
+		while (now_sec() - t0 < 5.0) {
+			if (rd32(guest_tx, OFF_MAGIC) == MAGIC &&
+			    rd32(guest_tx, OFF_GEN) != gen0)
+				break;
+			usleep(2000);
+		}
+		if (rd32(guest_tx, OFF_GEN) == gen0)
+			fprintf(stderr, "[ivshm] 5s 内没等到 guest 新 gen，照样发\n");
 	}
 	fprintf(stderr, "[ivshm] root TX @ %p, guest TX @ %p\n",
 		(void *)root_tx, (void *)guest_tx);
@@ -233,24 +255,7 @@ int main(int argc, char **argv)
 	 *   - gen 变了才说明 guest 这次真的启动了；
 	 *   - 如果 5s 内 gen 没变，可能 guest 已经先启动过了，照发。
 	 */
-	{
-		uint32_t gen0 = rd32(guest_tx, OFF_GEN);
 
-		start = now_sec();
-		for (;;) {
-			double el = now_sec() - start;
-
-			if (rd32(guest_tx, OFF_MAGIC) == MAGIC &&
-			    rd32(guest_tx, OFF_GEN) != gen0)
-				break;
-			if (el > 5.0) {
-				fprintf(stderr,
-					"[ivshm] 5s 内没等到 guest 新 gen，照样发\n");
-				break;
-			}
-			usleep(2000);
-		}
-	}
 
 	if (send_text && rounds > 1) {
 		/*

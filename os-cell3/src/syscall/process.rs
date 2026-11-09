@@ -17,7 +17,6 @@ use crate::task::{
     current_user_token, exit_current_and_run_next, pid2process, suspend_current_and_run_next,
 };
 use crate::timer::get_time_ms;
-use alloc::sync::Arc;
 
 /// 退出（对照 upstream 的 `sys_exit`）
 pub fn sys_exit(exit_code: i32) -> ! {
