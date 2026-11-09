@@ -87,6 +87,12 @@ ssh $SSHOPTS "$ROOTCELL" "
       jailhouse cell list; exit 1
   fi
   drain_console   # load/create 自己的 hypervisor 日志也丢掉，只看 cell 的输出
+  # ★ ch7+：清掉共享内存里上一轮残留的输入（否则新 shell 会把上次的 "exit" 之类
+  #   直接吃掉）。只在没有交互控制台在跑的时候做，别打扰正在用的会话。
+  if [ -x /root/ivshm-console ] && [ -c /dev/uio0 ] && \
+     ! pgrep -x ivshm-console >/dev/null 2>&1; then
+      /root/ivshm-console -r >/dev/null 2>&1 || true
+  fi
   jailhouse cell start --name rc-aarch
   sleep 0.3
   jailhouse cell list
