@@ -1,5 +1,13 @@
 # rc-aarch — 用 AArch64 重写 rCore ch1~ch7
 
+**A Rust bare-metal kernel written from scratch for AArch64, following rCore-Tutorial chapter by chapter (ch1–ch9), targeting the Raspberry Pi 4B as a Jailhouse inmate cell.**
+
+The goal: there is no Rust inmate in the Jailhouse ecosystem — all upstream inmates
+(inmate-demo, Zephyr, FreeRTOS) are C. This project fills that gap by reimplementing
+rCore's kernel concepts (boot, trap/hypercall, task switching, paging, process, fs, IPC,
+threads/sync) in Rust on AArch64, and running them as a real cell on top of
+openEuler MCS + Jailhouse.
+
 > **一句话：rCore 是"教材"，Jailhouse/MCS 是"战场"——把 rCore 各章用 AArch64 重写一遍，你就同时拿到了 Rust 系统编程能力和 MCS 项目的真实产出。**
 >
 > 创建：2026-09-18 ｜ 状态：**ch1 ~ ch9（线程/同步 + 块缓存）在树莓派 4B / openEuler MCS / Jailhouse cell3 上跑通**
@@ -155,3 +163,15 @@ systemctl stop dhcpcd && systemctl mask dhcpcd     # 本次开机有效
 > 地址变了用 `./scripts/find-board.sh` 找（并发 ping 网段 + 按 MAC 查 `ip neigh`）；
 > 板子重启后 SSH 公钥会丢，用 `~/.local/bin/rc-ssh`（带密码回退）先把公钥装回去。
 
+
+---
+
+## 七、License
+
+MIT License —— 见 [LICENSE](LICENSE)。
+
+## 八、安全说明
+
+本仓库是学习/研究用的公开项目。文档里出现的 `192.168.x.x` 均为**内网地址**（不可路由），
+`root@<内网IP>` 仅用于说明板子的调试方式，不含任何密码或凭证。
+如果你的网络环境有特殊要求，请把文档里的地址替换成占位符后再分发。
