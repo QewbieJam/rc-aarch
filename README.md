@@ -156,7 +156,7 @@ systemctl stop dhcpcd && systemctl mask dhcpcd     # 本次开机有效
 ```
 
 以上都只在**本次开机**有效（`/etc` 是内存）。要重启后也稳：
-1. **推荐**：路由器里做 DHCP 静态绑定，MAC `dc:a6:32:cc:41:b4` → `192.168.31.75`；
+1. **推荐**：路由器里做 DHCP 静态绑定，MAC `<PI_MAC>` → `192.168.31.75`；
 2. 或在 PC 上改 SD 卡 BOOT 分区里的 initramfs（把 `.network` 的 `DHCP=ipv4` 改成 `DHCP=no`、
    地址写死，并 mask dhcpcd）。
 

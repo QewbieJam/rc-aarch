@@ -9,7 +9,13 @@
 # 想彻底固定，在路由器上给这个 MAC 做 DHCP 静态绑定（或修改 SD 卡的 initramfs 网络配置）。
 set -e
 SUBNET=${SUBNET:-192.168.31}
-MAC=${MAC:-dc:a6:32:cc:41:b4}
+# 板子的 MAC 请自行提供（不写进仓库）：
+#   MAC=xx:xx:xx:xx:xx:xx ./scripts/find-board.sh
+MAC=${MAC:-}
+if [ -z "$MAC" ]; then
+    echo "请设置板子 MAC，例如：MAC=xx:xx:xx:xx:xx:xx $0" >&2
+    exit 1
+fi
 i=1
 while [ "$i" -le 254 ]; do
     ping -c1 -W1 "$SUBNET.$i" >/dev/null 2>&1 &
