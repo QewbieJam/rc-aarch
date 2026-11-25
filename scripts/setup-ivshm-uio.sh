@@ -17,8 +17,14 @@ SSHOPTS=${SSHOPTS:--F /dev/null -o StrictHostKeyChecking=accept-new}
 ssh $SSHOPTS "$ROOTCELL" '
   BDF=0001:00:00.0
   if [ ! -e /dev/uio0 ]; then
-      [ "$(cat /sys/bus/pci/devices/$BDF/driver 2>/dev/null | xargs basename 2>/dev/null)" = "ivshmem-net" ] \
-          && echo -n $BDF > /sys/bus/pci/drivers/ivshmem-net/unbind
+      # ★ 注意：/sys/bus/pci/devices/$BDF/driver 是指向目录的符号链接，
+      #   不能用 cat 读（会报 "Is a directory"）；用 readlink + basename。
+      if [ -L /sys/bus/pci/devices/$BDF/driver ]; then
+          DRV=$(basename "$(readlink /sys/bus/pci/devices/$BDF/driver)")
+          if [ "$DRV" = "ivshmem-net" ]; then
+              echo -n $BDF > /sys/bus/pci/drivers/ivshmem-net/unbind
+          fi
+      fi
       echo -n "110a 4106" > /sys/bus/pci/drivers/uio_ivshmem/new_id 2>/dev/null || true
       sleep 1
   fi

@@ -50,7 +50,7 @@ if [ "$WITH_SHELL" = 1 ]; then
         pkill -x ivshm-console 2>/dev/null || true
         sleep 0.3
     ' >/dev/null 2>&1
-    ROOTCELL=$BOARD SSHOPTS=$SSHOPTS ./scripts/setup-ivshm-uio.sh >/dev/null 2>&1 || {
+    ROOTCELL="$BOARD" SSHOPTS="$SSHOPTS" ./scripts/setup-ivshm-uio.sh >/dev/null 2>&1 || {
         say "uio 准备失败（跳过 ch7+）"; WITH_SHELL=0;
     }
     if [ "$WITH_SHELL" = 1 ]; then
